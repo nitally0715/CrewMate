@@ -22,6 +22,7 @@ const TRADE_LABEL: Record<string, string> = {
   MASONRY: '조적공',
   MATERIAL_CARRY: '자재운반',
   GENERAL: '보통인부',
+  ANY: '직종 무관',
 };
 
 export default function CompanyHomePage() {

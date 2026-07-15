@@ -87,7 +87,7 @@ def list_workers(event, principal: Principal, _params):
 def _apply_filters(workers, qp):
     trade = qp.get("trade")
     region = qp.get("region")
-    min_skill = qp.get("min_skill_level")
+    min_career = qp.get("min_career_years")
     min_wage = qp.get("min_wage")
     max_wage = qp.get("max_wage")
     if trade:
@@ -98,7 +98,7 @@ def _apply_filters(workers, qp):
             continue
         if region and w.get("region") != region:
             continue
-        if min_skill and int(w.get("skill_level", 0)) < int(min_skill):
+        if min_career and int(w.get("career_years", 0)) < int(min_career):
             continue
         wage = int(w.get("desired_daily_wage", 0))
         if min_wage and wage < int(min_wage):

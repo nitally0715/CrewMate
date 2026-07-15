@@ -12,9 +12,9 @@ const STATUS_LABEL: Record<string, string> = {
 };
 const TRADE_LABEL: Record<string, string> = {
   FORMWORK: '형틀목공', REBAR: '철근공', MASONRY: '조적공',
-  MATERIAL_CARRY: '자재운반', GENERAL: '보통인부',
+  MATERIAL_CARRY: '자재운반', GENERAL: '보통인부', ANY: '직종 무관',
 };
-const PRIORITY_LABEL: Record<string, string> = { HIGH: '높음', MEDIUM: '보통', LOW: '낮음' };
+const PRIORITY_LABEL: Record<number, string> = { 1: '1순위', 2: '2순위', 3: '3순위' };
 const ACCEPTANCE_CONFIG: Record<AcceptanceStatus, { label: string; color: string }> = {
   PENDING: { label: '응답 대기', color: 'bg-yellow-100 text-yellow-700' },
   ACCEPTED: { label: '수락', color: 'bg-green-100 text-green-700' },
@@ -342,7 +342,7 @@ export default function OfficeRequestDetailPage() {
           <div><span className="text-gray-500">시작 시간</span><p className="font-medium text-gray-800">{detail.start_time}</p></div>
           <div className="col-span-2"><span className="text-gray-500">위치</span><p className="font-medium text-gray-800">{detail.location_text}</p></div>
           <div><span className="text-gray-500">총예산</span><p className="font-medium text-gray-800">{detail.budget.toLocaleString()}원</p></div>
-          <div><span className="text-gray-500">우선순위</span><p className="font-medium text-gray-800 text-xs">비용 {PRIORITY_LABEL[detail.priority.cost]} / 숙련 {PRIORITY_LABEL[detail.priority.skill]} / 팀워크 {PRIORITY_LABEL[detail.priority.teamwork]}</p></div>
+          <div><span className="text-gray-500">우선순위</span><p className="font-medium text-gray-800 text-xs">비용 {PRIORITY_LABEL[detail.priority.cost]} / 경력 {PRIORITY_LABEL[detail.priority.career]} / 팀워크 {PRIORITY_LABEL[detail.priority.teamwork]}</p></div>
         </div>
       </div>
 

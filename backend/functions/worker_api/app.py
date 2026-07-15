@@ -31,7 +31,6 @@ from shared.schemas import (
     now_iso,
     parse_body,
     require_fields,
-    validate_skill_level,
     validate_trades,
     work_history_entry,
     worker_self_view,
@@ -53,7 +52,6 @@ _EDITABLE_FIELDS = (
     "phone",
     "preferred_trades",
     "excluded_trades",
-    "skill_level",
     "career_years",
     "age",
     "region",
@@ -89,7 +87,7 @@ def create_application(event, principal: Principal, _params):
     body = parse_body(event)
     require_fields(
         body,
-        ["name", "phone", "office_id", "preferred_trades", "skill_level",
+        ["name", "phone", "office_id", "preferred_trades",
          "career_years", "age", "region", "desired_daily_wage"],
     )
     preferred = validate_trades(body.get("preferred_trades"), "preferred_trades")
@@ -106,7 +104,6 @@ def create_application(event, principal: Principal, _params):
         office_id=body["office_id"],
         preferred_trades=preferred,
         excluded_trades=excluded,
-        skill_level=body["skill_level"],
         career_years=int(body["career_years"]),
         age=int(body["age"]),
         region=body["region"],
@@ -140,8 +137,6 @@ def update_application(event, principal: Principal, _params):
         updates["preferred_trades"] = validate_trades(updates["preferred_trades"], "preferred_trades")
     if "excluded_trades" in updates:
         updates["excluded_trades"] = validate_trades(updates["excluded_trades"], "excluded_trades")
-    if "skill_level" in updates:
-        updates["skill_level"] = validate_skill_level(updates["skill_level"])
     for int_field in ("career_years", "age", "desired_daily_wage"):
         if int_field in updates:
             updates[int_field] = int(updates[int_field])

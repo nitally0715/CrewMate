@@ -34,7 +34,7 @@ from shared.schemas import (
     parse_body,
     request_view,
     require_fields,
-    validate_trade,
+    validate_required_trade,
 )
 from shared.state import (
     Acceptance,
@@ -62,7 +62,7 @@ def _validate_required_workers(required_workers: Any) -> None:
     for spec in required_workers:
         if not isinstance(spec, dict) or "trade" not in spec or "count" not in spec:
             raise ApiError(ErrorCode.VALIDATION_ERROR, "required_workers 항목은 trade와 count가 필요합니다.")
-        validate_trade(spec["trade"])
+        validate_required_trade(spec["trade"])
         try:
             if int(spec["count"]) <= 0:
                 raise ValueError

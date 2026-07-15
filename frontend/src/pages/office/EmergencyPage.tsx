@@ -6,10 +6,17 @@ import type { GapEvent, Crew, WorkRequest, Recommendation, CrewMember, Worker, T
 
 const TRADE_LABEL: Record<string, string> = {
   FORMWORK: '형틀목공', REBAR: '철근공', MASONRY: '조적공',
-  MATERIAL_CARRY: '자재운반', GENERAL: '보통인부',
+  MATERIAL_CARRY: '자재운반', GENERAL: '보통인부', ANY: '직종 무관',
 };
 
 const ALL_TRADES: Trade[] = ['FORMWORK', 'REBAR', 'MASONRY', 'MATERIAL_CARRY', 'GENERAL'];
+
+// 직종 무관(ANY) 슬롯에 배정할 실제 직종 (excluded 회피).
+function resolveAnyTrade(worker: Worker): Trade {
+  const pref = worker.preferred_trades.find((t) => !worker.excluded_trades.includes(t));
+  if (pref) return pref;
+  return ALL_TRADES.find((t) => !worker.excluded_trades.includes(t)) || ALL_TRADES[0];
+}
 
 interface RequestDetail extends WorkRequest { crew: (Crew & { members: CrewMember[] }) | null; }
 
@@ -92,12 +99,37 @@ export default function EmergencyPage() {
   const declinedIds = detail.declined_worker_ids || [];
   const fixedIds = fixedMembers.map((m) => m.worker_id);
 
-  // 직종별 결원 현황 (요구 - 고정)
-  const tradeStatus = detail.required_workers.map((rw) => {
-    const fixedHave = fixedMembers.filter((m) => m.assigned_trade === rw.trade).length;
-    const selHave = manualSelected.filter((s) => s.assigned_trade === rw.trade).length;
-    return { trade: rw.trade, required: rw.count, fixedHave, have: fixedHave + selHave };
-  });
+  // 직종별 결원 현황 (요구 - 고정). 특정 직종을 먼저 소비하고 남은 인원으로 ANY 충족.
+  const _fixedPool: Trade[] = fixedMembers.map((m) => m.assigned_trade);
+  const _selPool: Trade[] = manualSelected.map((s) => s.assigned_trade);
+  const tradeStatus = (() => {
+    const fpool = [..._fixedPool];
+    const pool = [..._fixedPool, ..._selPool];
+    const rows = detail.required_workers.map((rw) => ({ trade: rw.trade, required: rw.count, fixedHave: 0, have: 0 }));
+    rows.forEach((row) => {
+      if (row.trade === 'ANY') return;
+      while (row.fixedHave < row.required) {
+        const i = fpool.indexOf(row.trade as Trade);
+        if (i < 0) break;
+        fpool.splice(i, 1);
+        row.fixedHave++;
+      }
+      while (row.have < row.required) {
+        const i = pool.indexOf(row.trade as Trade);
+        if (i < 0) break;
+        pool.splice(i, 1);
+        row.have++;
+      }
+    });
+    rows.forEach((row) => {
+      if (row.trade !== 'ANY') return;
+      row.fixedHave = Math.min(row.required, fpool.length);
+      fpool.splice(0, row.fixedHave);
+      row.have = Math.min(row.required, pool.length);
+      pool.splice(0, row.have);
+    });
+    return rows;
+  })();
   const allFulfilled = tradeStatus.every((t) => t.have >= t.required);
   const manualCost = manualSelected.reduce((s, m) => s + m.offered_wage, 0);
   const remainingBudget = detail.budget > 0 ? detail.budget - fixedCost : 0;
@@ -106,12 +138,14 @@ export default function EmergencyPage() {
   const isSelected = (id: string) => manualSelected.some((s) => s.worker_id === id);
   const canAssign = (w: Worker, t: Trade) => !w.excluded_trades.includes(t);
   const getDefaultTrade = (w: Worker): Trade => {
-    // 결원 직종 중 이 worker가 가능한 것 우선
+    // 결원 직종 중 이 worker가 가능한 것 우선 (ANY는 배치 가능한 실제 직종으로)
     for (const t of tradeStatus.filter((ts) => ts.have < ts.required).map((ts) => ts.trade)) {
+      if (t === 'ANY') return resolveAnyTrade(w);
       if (canAssign(w, t)) return t;
     }
-    for (const t of detail.required_workers.map((rw) => rw.trade)) {
-      if (canAssign(w, t)) return t;
+    for (const rw of detail.required_workers) {
+      if (rw.trade === 'ANY') return resolveAnyTrade(w);
+      if (canAssign(w, rw.trade)) return rw.trade;
     }
     return ALL_TRADES[0];
   };
@@ -123,7 +157,7 @@ export default function EmergencyPage() {
     setManualSelected(manualSelected.map((s) => s.worker_id === id ? { ...s, [field]: field === 'offered_wage' ? Number(value) : value } : s));
   };
   const isBlocked = (w: Worker) => declinedIds.includes(w.worker_id) || fixedIds.includes(w.worker_id)
-    || detail.required_workers.every((rw) => w.excluded_trades.includes(rw.trade));
+    || detail.required_workers.every((rw) => rw.trade !== 'ANY' && w.excluded_trades.includes(rw.trade));
 
   return (
     <div className="max-w-3xl mx-auto space-y-5">
@@ -291,7 +325,7 @@ export default function EmergencyPage() {
                   <th className="w-10 px-4 py-3"></th>
                   <th className="text-left px-4 py-3 text-gray-500 font-medium">이름</th>
                   <th className="text-left px-4 py-3 text-gray-500 font-medium">희망 직종</th>
-                  <th className="text-center px-4 py-3 text-gray-500 font-medium">숙련</th>
+                  <th className="text-center px-4 py-3 text-gray-500 font-medium">경력</th>
                   <th className="text-right px-4 py-3 text-gray-500 font-medium">희망 일당</th>
                 </tr>
               </thead>
@@ -315,7 +349,7 @@ export default function EmergencyPage() {
                           ))}
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-center">{'★'.repeat(w.skill_level)}</td>
+                      <td className="px-4 py-3 text-center text-gray-600">{w.career_years}년차</td>
                       <td className="px-4 py-3 text-right text-gray-600">{w.desired_daily_wage.toLocaleString()}원</td>
                     </tr>
                   );

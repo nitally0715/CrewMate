@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../../api/client';
-import type { Worker, WorkRequest, Crew, CrewMember, Trade, RequiredWorker } from '../../api/types';
+import type { Worker, WorkRequest, Crew, CrewMember, Trade, RequiredTrade, RequiredWorker } from '../../api/types';
 
 const TRADE_LABEL: Record<string, string> = {
   FORMWORK: '형틀목공',
@@ -9,9 +9,17 @@ const TRADE_LABEL: Record<string, string> = {
   MASONRY: '조적공',
   MATERIAL_CARRY: '자재운반',
   GENERAL: '보통인부',
+  ANY: '직종 무관',
 };
 
 const ALL_TRADES: Trade[] = ['FORMWORK', 'REBAR', 'MASONRY', 'MATERIAL_CARRY', 'GENERAL'];
+
+// 직종 무관(ANY) 슬롯에 배정할 실제 직종 (excluded 회피).
+function resolveAnyTrade(worker: Worker): Trade {
+  const pref = worker.preferred_trades.find((t) => !worker.excluded_trades.includes(t));
+  if (pref) return pref;
+  return ALL_TRADES.find((t) => !worker.excluded_trades.includes(t)) || ALL_TRADES[0];
+}
 
 const ACTIVE_CREW_STATUSES = ['DRAFT', 'PROPOSED', 'APPROVED', 'NOTIFIED', 'DISPATCHED', 'RUNNING'];
 
@@ -66,10 +74,10 @@ export default function ComposePage() {
     return !worker.excluded_trades.includes(trade);
   };
 
-  // worker가 아무 직종에도 배치 불가한지 (모든 요청 직종이 excluded)
+  // worker가 아무 직종에도 배치 불가한지 (모든 요청 직종이 excluded). ANY 요구가 있으면 배치 가능.
   const isFullyExcluded = (worker: Worker) => {
     if (!request) return false;
-    return request.required_workers.every((rw) => worker.excluded_trades.includes(rw.trade));
+    return request.required_workers.every((rw) => rw.trade !== 'ANY' && worker.excluded_trades.includes(rw.trade));
   };
 
   // 이 요청에 거절한 이력이 있는지
@@ -85,8 +93,9 @@ export default function ComposePage() {
     for (const pt of worker.preferred_trades) {
       if (request.required_workers.some((rw) => rw.trade === pt)) return pt;
     }
-    // 그 외 배치 가능한 것
+    // 그 외 배치 가능한 것 (ANY 요구는 배치 가능한 실제 직종으로)
     for (const rw of request.required_workers) {
+      if (rw.trade === 'ANY') return resolveAnyTrade(worker);
       if (canAssignTrade(worker, rw.trade)) return rw.trade;
     }
     return ALL_TRADES[0];
@@ -112,14 +121,35 @@ export default function ComposePage() {
     ));
   };
 
-  // 직종별 충족 현황 (gap 모드면 fixed 멤버도 포함해서 카운트)
-  const getTradeStatus = (): { trade: Trade; required: number; have: number }[] => {
+  // 직종별 충족 현황 (gap 모드면 fixed 멤버도 포함해서 카운트).
+  // 특정 직종을 먼저 소비하고, 남은 인원으로 ANY(직종 무관) 요구를 채운다.
+  const getTradeStatus = (): { trade: RequiredTrade; required: number; have: number }[] => {
     if (!request) return [];
-    return request.required_workers.map((rw: RequiredWorker) => {
-      const fixedHave = fixedMembers.filter((m) => m.assigned_trade === rw.trade).length;
-      const selectedHave = selected.filter((s) => s.assigned_trade === rw.trade).length;
-      return { trade: rw.trade, required: rw.count, have: fixedHave + selectedHave };
+    const pool: Trade[] = [
+      ...fixedMembers.map((m) => m.assigned_trade),
+      ...selected.map((s) => s.assigned_trade),
+    ];
+    const rows = request.required_workers.map((rw: RequiredWorker) => ({
+      trade: rw.trade, required: rw.count, have: 0,
+    }));
+    // 1) 특정 직종 소비
+    rows.forEach((row) => {
+      if (row.trade === 'ANY') return;
+      while (row.have < row.required) {
+        const idx = pool.indexOf(row.trade as Trade);
+        if (idx < 0) break;
+        pool.splice(idx, 1);
+        row.have++;
+      }
     });
+    // 2) 남은 인원으로 ANY 충족
+    rows.forEach((row) => {
+      if (row.trade !== 'ANY') return;
+      const take = Math.min(row.required, pool.length);
+      pool.splice(0, take);
+      row.have = take;
+    });
+    return rows;
   };
 
   const tradeStatus = getTradeStatus();
@@ -275,7 +305,7 @@ export default function ComposePage() {
               <th className="w-10 px-4 py-3"></th>
               <th className="text-left px-4 py-3 text-gray-500 font-medium">이름</th>
               <th className="text-left px-4 py-3 text-gray-500 font-medium">희망 직종</th>
-              <th className="text-center px-4 py-3 text-gray-500 font-medium">숙련</th>
+              <th className="text-center px-4 py-3 text-gray-500 font-medium">경력</th>
               <th className="text-right px-4 py-3 text-gray-500 font-medium">희망 일당</th>
               <th className="text-left px-4 py-3 text-gray-500 font-medium">지역</th>
               <th className="text-center px-4 py-3 text-gray-500 font-medium">배치 가능</th>
@@ -309,7 +339,7 @@ export default function ComposePage() {
                       ))}
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-center">{'★'.repeat(w.skill_level)}</td>
+                  <td className="px-4 py-3 text-center text-gray-600">{w.career_years}년차</td>
                   <td className="px-4 py-3 text-right text-gray-600">{w.desired_daily_wage.toLocaleString()}원</td>
                   <td className="px-4 py-3 text-gray-600">{w.region}</td>
                   <td className="px-4 py-3 text-center">

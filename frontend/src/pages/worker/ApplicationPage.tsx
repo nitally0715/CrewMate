@@ -23,7 +23,6 @@ export default function ApplicationPage() {
     office_id: '',
     preferred_trades: [],
     excluded_trades: [],
-    skill_level: 3,
     career_years: 0,
     age: 20,
     region: '',
@@ -53,7 +52,6 @@ export default function ApplicationPage() {
           office_id: w.office_id,
           preferred_trades: w.preferred_trades,
           excluded_trades: w.excluded_trades,
-          skill_level: w.skill_level,
           career_years: w.career_years,
           age: w.age,
           region: w.region,
@@ -193,14 +191,6 @@ export default function ApplicationPage() {
               );
             })}
           </div>
-        </div>
-
-        {/* 숙련도 */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">숙련도 * <span className="text-gray-400">(1~5)</span></label>
-          <input type="number" min={1} max={5} required value={form.skill_level}
-            onChange={(e) => setForm({ ...form, skill_level: Number(e.target.value) })}
-            className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
         </div>
 
         {/* 경력 */}

@@ -97,6 +97,12 @@ def validate_trade(trade: str) -> None:
         raise ApiError(ErrorCode.VALIDATION_ERROR, f"알 수 없는 직종입니다: {trade}")
 
 
+def validate_required_trade(trade: str) -> None:
+    """요청(required_workers)의 직종 검증. 실제 직종 + 직종 무관(ANY) 허용."""
+    if trade not in Trade.REQUIRED_ALL:
+        raise ApiError(ErrorCode.VALIDATION_ERROR, f"알 수 없는 직종입니다: {trade}")
+
+
 def validate_trades(trades: Any, field: str) -> list[str]:
     if trades is None:
         return []
@@ -105,16 +111,6 @@ def validate_trades(trades: Any, field: str) -> list[str]:
     for t in trades:
         validate_trade(t)
     return list(trades)
-
-
-def validate_skill_level(level: Any) -> int:
-    try:
-        level_int = int(level)
-    except (ValueError, TypeError):
-        raise ApiError(ErrorCode.VALIDATION_ERROR, "skill_level은 1~5 정수여야 합니다.")
-    if not 1 <= level_int <= 5:
-        raise ApiError(ErrorCode.VALIDATION_ERROR, "skill_level은 1~5 정수여야 합니다.")
-    return level_int
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +125,6 @@ def build_worker(
     office_id: str,
     preferred_trades: list[str],
     excluded_trades: list[str],
-    skill_level: int,
     career_years: int,
     age: int,
     region: str,
@@ -140,7 +135,6 @@ def build_worker(
     completed_count: int = 0,
     dispatched_count: int = 0,
 ) -> dict[str, Any]:
-    skill_level = validate_skill_level(skill_level)
     wid = worker_id or new_id()
     ts = now_iso()
     item = {
@@ -153,7 +147,6 @@ def build_worker(
         "state": state,
         "preferred_trades": preferred_trades,
         "excluded_trades": excluded_trades,
-        "skill_level": skill_level,
         "career_years": career_years,
         "age": age,
         "region": region,
@@ -199,7 +192,7 @@ def worker_public_view(worker: dict[str, Any]) -> dict[str, Any]:
     return {
         "worker_id": worker.get("worker_id"),
         "name": worker.get("name"),
-        "skill_level": clean(worker.get("skill_level")),
+        "career_years": clean(worker.get("career_years")),
         "preferred_trades": clean(worker.get("preferred_trades") or []),
     }
 
@@ -419,13 +412,13 @@ def build_offer(crew_id: str, request: dict[str, Any], member: dict[str, Any], *
 
 
 def crew_member_view(assignment: dict[str, Any], worker: dict[str, Any] | None) -> dict[str, Any]:
-    """CrewMember 계약: worker_id, name, assigned_trade, skill_level, offered_wage,
+    """CrewMember 계약: worker_id, name, assigned_trade, career_years, offered_wage,
     acceptance, notified_at?, is_replacement?, eta?, worker_state?."""
     view: dict[str, Any] = {
         "worker_id": assignment.get("worker_id"),
         "name": (worker or {}).get("name"),
         "assigned_trade": assignment.get("assigned_trade"),
-        "skill_level": clean((worker or {}).get("skill_level")),
+        "career_years": clean((worker or {}).get("career_years")),
         "offered_wage": clean(assignment.get("offered_wage")),
         "acceptance": assignment.get("acceptance"),
     }

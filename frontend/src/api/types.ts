@@ -53,8 +53,9 @@ export type Trade =
   | 'MATERIAL_CARRY'
   | 'GENERAL';
 
-// 우선순위 레벨
-export type PriorityLevel = 'HIGH' | 'MEDIUM' | 'LOW';
+// 우선순위 순위 (1=최우선, 3=최하위). cost/career/teamwork에 1·2·3을 중복 없이 배정.
+export type PriorityRank = 1 | 2 | 3;
+export type PriorityAxis = 'cost' | 'career' | 'teamwork';
 
 // === API 응답 형식 ===
 
@@ -93,7 +94,6 @@ export interface Worker {
   // 직종: 단일이 아닌 희망/비희망 복수 선택
   preferred_trades: Trade[];
   excluded_trades: Trade[];
-  skill_level: number;
   career_years: number;
   age: number;
   region: string;
@@ -130,15 +130,18 @@ export interface WorkHistoryEntry {
   completed_at: string;
 }
 
+// 요청 직종: 실제 직종 + 직종 무관(ANY). 근로자 직종에는 ANY를 쓰지 않는다.
+export type RequiredTrade = Trade | 'ANY';
+
 export interface RequiredWorker {
-  trade: Trade;
+  trade: RequiredTrade;
   count: number;
 }
 
 export interface Priority {
-  cost: PriorityLevel;
-  skill: PriorityLevel;
-  teamwork: PriorityLevel;
+  cost: PriorityRank;
+  career: PriorityRank;
+  teamwork: PriorityRank;
 }
 
 export interface WorkRequest {
@@ -164,7 +167,7 @@ export interface CrewMember {
   worker_id: string;
   name: string;
   assigned_trade: Trade;
-  skill_level: number;
+  career_years: number;
   offered_wage: number;
   acceptance: AcceptanceStatus;
   notified_at?: string;
@@ -253,7 +256,6 @@ export interface WorkerApplicationRequest {
   office_id: string;
   preferred_trades: Trade[];
   excluded_trades: Trade[];
-  skill_level: number;
   career_years: number;
   age: number;
   region: string;

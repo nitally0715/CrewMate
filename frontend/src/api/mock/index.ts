@@ -10,6 +10,7 @@ import type {
   Crew,
   CrewMember,
   Trade,
+  RequiredTrade,
   Recommendation,
 } from '../types';
 import { SEED_ACCOUNTS, SEED_OFFICES, mockState, setCurrentUserId, getCurrentUserId, registerAccount } from './state';
@@ -429,7 +430,7 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
     // 신규 멤버 생성 (NOTIFIED로 제안)
     const addedMembers: CrewMember[] = newMembers.map((mi) => {
       const w = mockState.workers.find((x) => x.worker_id === mi.worker_id)!;
-      return { worker_id: w.worker_id, name: w.name, assigned_trade: mi.assigned_trade, skill_level: w.skill_level, offered_wage: mi.offered_wage, acceptance: 'PENDING' as const, is_replacement: true };
+      return { worker_id: w.worker_id, name: w.name, assigned_trade: mi.assigned_trade, career_years: w.career_years, offered_wage: mi.offered_wage, acceptance: 'PENDING' as const, is_replacement: true };
     });
 
     // 예산 검증 (fixed + added 총합)
@@ -551,7 +552,7 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
 
     const crewMembers: CrewMember[] = memberInputs.map((mi) => {
       const w = mockState.workers.find((x) => x.worker_id === mi.worker_id)!;
-      return { worker_id: w.worker_id, name: w.name, assigned_trade: mi.assigned_trade, skill_level: w.skill_level, offered_wage: mi.offered_wage, acceptance: 'PENDING' };
+      return { worker_id: w.worker_id, name: w.name, assigned_trade: mi.assigned_trade, career_years: w.career_years, offered_wage: mi.offered_wage, acceptance: 'PENDING' };
     });
 
     // 기존 crew 정리 (재편성 시 옛 거절 crew 제거)
@@ -604,9 +605,10 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
         for (const w of sorted) {
           if (assigned >= rw.count) break;
           if (members.some((m) => m.worker_id === w.worker_id)) continue;
-          if (w.excluded_trades.includes(rw.trade)) continue;
+          const at = rw.trade === 'ANY' ? assignAnyTrade(w) : rw.trade;
+          if (!at || w.excluded_trades.includes(at)) continue;
           const wage = w.desired_daily_wage;
-          members.push({ worker_id: w.worker_id, name: w.name, assigned_trade: rw.trade, skill_level: w.skill_level, offered_wage: wage, acceptance: 'PENDING' as const, notified_at: undefined });
+          members.push({ worker_id: w.worker_id, name: w.name, assigned_trade: at, career_years: w.career_years, offered_wage: wage, acceptance: 'PENDING' as const, notified_at: undefined });
           costTotal += wage;
           assigned++;
         }
@@ -616,7 +618,7 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
       const withinBudget = request.budget <= 0 || costTotal <= request.budget;
       const isDuplicate = recommendations.some((r) => r.member_ids.slice().sort().join(',') === members.map((m) => m.worker_id).sort().join(','));
       if (members.length >= totalNeeded && withinBudget && !isDuplicate) {
-        const reasons = ['필수 직종 구성 충족', '예산 범위 내', rankCounter === 1 ? '최저 비용 우선' : '숙련도 균형'];
+        const reasons = ['필수 직종 구성 충족', '예산 범위 내', rankCounter === 1 ? '최저 비용 우선' : '경력 균형'];
         recommendations.push({
           rank: rankCounter,
           member_ids: members.map((m) => m.worker_id),
@@ -736,12 +738,21 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
     const fixedMembers = crew.members.filter((m) => m.acceptance !== 'DECLINED');
     const fixedCost = fixedMembers.reduce((s, m) => s + m.offered_wage, 0);
 
-    // 결원 직종 계산 (요구 - 고정 인원)
-    const gapTrades: Trade[] = [];
+    // 결원 직종 계산 (요구 - 고정 인원). 특정 직종을 먼저 소비하고, 남은 고정 인원으로 ANY를 흡수.
+    const gapTrades: RequiredTrade[] = [];
+    const fixedPool: Trade[] = fixedMembers.map((m) => m.assigned_trade);
+    let anyNeeded = 0;
     for (const rw of request.required_workers) {
-      const fixedHave = fixedMembers.filter((m) => m.assigned_trade === rw.trade).length;
-      for (let i = 0; i < rw.count - fixedHave; i++) gapTrades.push(rw.trade);
+      if (rw.trade === 'ANY') { anyNeeded += rw.count; continue; }
+      let have = 0;
+      for (let i = 0; i < rw.count; i++) {
+        const idx = fixedPool.indexOf(rw.trade);
+        if (idx >= 0) { fixedPool.splice(idx, 1); have++; }
+      }
+      for (let i = 0; i < rw.count - have; i++) gapTrades.push(rw.trade);
     }
+    const anyRemaining = Math.max(0, anyNeeded - fixedPool.length);
+    for (let i = 0; i < anyRemaining; i++) gapTrades.push('ANY');
 
     // 대체 후보: READY + 거절 이력 없음 + 고정멤버 아님
     const declinedIds = request.declined_worker_ids || [];
@@ -764,8 +775,9 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
       for (const trade of gapTrades) {
         for (const w of sorted) {
           if (picked.some((p) => p.worker_id === w.worker_id)) continue;
-          if (w.excluded_trades.includes(trade)) continue;
-          picked.push({ worker_id: w.worker_id, name: w.name, assigned_trade: trade, skill_level: w.skill_level, offered_wage: w.desired_daily_wage, acceptance: 'PENDING' });
+          const at = trade === 'ANY' ? assignAnyTrade(w) : trade;
+          if (!at || w.excluded_trades.includes(at)) continue;
+          picked.push({ worker_id: w.worker_id, name: w.name, assigned_trade: at, career_years: w.career_years, offered_wage: w.desired_daily_wage, acceptance: 'PENDING' });
           cost += w.desired_daily_wage;
           break;
         }
@@ -779,7 +791,7 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
           members: picked,
           total_cost: cost,
           reason: `잔여 팀원과의 협업 및 예산(${remainingBudget > 0 ? remainingBudget.toLocaleString() + '원 이내' : '제한 없음'})을 고려한 긴급 대체 ${rankCounter}안입니다.`,
-          considerations: ['잔여 팀원 유지', '결원 직종 충족', rankCounter === 1 ? '최저 비용' : '숙련도 균형'],
+          considerations: ['잔여 팀원 유지', '결원 직종 충족', rankCounter === 1 ? '최저 비용' : '경력 균형'],
         });
         rankCounter++;
       }
@@ -820,7 +832,7 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
     const fixedMembers = crew.members.filter((m) => m.acceptance !== 'DECLINED');
     const addedMembers: CrewMember[] = replacementInputs.map((mi) => {
       const w = mockState.workers.find((x) => x.worker_id === mi.worker_id)!;
-      return { worker_id: w.worker_id, name: w.name, assigned_trade: mi.assigned_trade, skill_level: w.skill_level, offered_wage: mi.offered_wage, acceptance: 'PENDING' as const, is_replacement: true };
+      return { worker_id: w.worker_id, name: w.name, assigned_trade: mi.assigned_trade, career_years: w.career_years, offered_wage: mi.offered_wage, acceptance: 'PENDING' as const, is_replacement: true };
     });
 
     crew.members = [...fixedMembers, ...addedMembers];
@@ -940,6 +952,17 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
 function delay(ms: number) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function now() { return new Date().toISOString(); }
 
+const ALL_TRADES: Trade[] = ['FORMWORK', 'REBAR', 'MASONRY', 'MATERIAL_CARRY', 'GENERAL'];
+
+// 직종 무관(ANY) 슬롯에 배정할 실제 직종을 고른다 (excluded 회피).
+function assignAnyTrade(w: Worker): Trade | null {
+  const excluded = w.excluded_trades;
+  const pref = w.preferred_trades.find((t) => !excluded.includes(t));
+  if (pref) return pref;
+  if (!excluded.includes('GENERAL')) return 'GENERAL';
+  return ALL_TRADES.find((t) => !excluded.includes(t)) || null;
+}
+
 function applyApplicationFields(payload: WorkerApplicationRequest) {
   return {
     name: payload.name,
@@ -947,7 +970,6 @@ function applyApplicationFields(payload: WorkerApplicationRequest) {
     office_id: payload.office_id,
     preferred_trades: payload.preferred_trades,
     excluded_trades: payload.excluded_trades,
-    skill_level: payload.skill_level,
     career_years: payload.career_years,
     age: payload.age,
     region: payload.region,
