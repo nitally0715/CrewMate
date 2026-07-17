@@ -16,6 +16,7 @@ Route (OFFICE 전용):
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import random
@@ -27,7 +28,7 @@ from pydantic import ValidationError
 from agent.crew_agent import BedrockUnavailable, compose as compose_crew
 from agent.schemas import AgentInput, AgentOutput
 from shared import db
-from shared.auth import Principal
+from shared.auth import Principal, get_principal
 from shared.crew import assemble_crew_members
 from shared.responses import ApiError, ErrorCode, success
 from shared.routing import Router
@@ -43,6 +44,8 @@ logger = logging.getLogger()
 router = Router()
 
 FALLBACK_ENABLED = os.environ.get("AGENT_FALLBACK_ENABLED", "false").lower() == "true"
+ASYNC_ENABLED = os.environ.get("CREW_AGENT_ASYNC_ENABLED", "false").lower() == "true"
+_LAMBDA_CLIENT = None
 
 
 # ---------------------------------------------------------------------------
@@ -651,5 +654,96 @@ def _to_decimal(value):
     return to_decimal(value)
 
 
+def _invoke_self(event: dict[str, Any], context: Any) -> None:
+    global _LAMBDA_CLIENT
+    if _LAMBDA_CLIENT is None:
+        import boto3
+
+        _LAMBDA_CLIENT = boto3.client("lambda")
+    function_name = getattr(context, "invoked_function_arn", None) or os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+    if not function_name:
+        raise RuntimeError("Lambda function name is unavailable")
+    response = _LAMBDA_CLIENT.invoke(
+        FunctionName=function_name,
+        InvocationType="Event",
+        Payload=json.dumps(event, ensure_ascii=False).encode("utf-8"),
+    )
+    if int(response.get("StatusCode", 0)) != 202:
+        raise RuntimeError("asynchronous crew agent invocation was not accepted")
+
+
+def _start_async(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    principal = get_principal(event)
+    principal.require_role(Role.OFFICE)
+    path = event.get("path") or ""
+    params = event.get("pathParameters") or {}
+    previous_status = ""
+    entity_id = ""
+    entity_type = ""
+
+    if path.endswith("/agent-compose"):
+        request_id = params.get("requestId") or path.rstrip("/").split("/")[-2]
+        request = db.get_request(request_id)
+        if not request:
+            raise ApiError(ErrorCode.REQUEST_NOT_FOUND, "요청을 찾을 수 없습니다.")
+        principal.require_office(request["office_id"])
+        if request["status"] in (
+            RequestStatus.RUNNING,
+            RequestStatus.COMPLETED,
+            RequestStatus.CANCELLED,
+            RequestStatus.REJECTED,
+        ):
+            raise ApiError(ErrorCode.STATE_CONFLICT, "종료되거나 작업 중인 요청은 AI 편성을 실행할 수 없습니다.")
+        previous_status = request["status"]
+        entity_id = request_id
+        entity_type = "REQUEST"
+        _set_request_status(request_id, RequestStatus.COMPOSING)
+    else:
+        event_id = params.get("eventId") or path.rstrip("/").split("/")[-2]
+        gap = db.get_gap_event(event_id)
+        if not gap:
+            raise ApiError(ErrorCode.GAP_EVENT_NOT_FOUND, "결원 이벤트를 찾을 수 없습니다.")
+        principal.require_office(gap["office_id"])
+        previous_status = gap["status"]
+        entity_id = event_id
+        entity_type = "GAP"
+        _set_gap_status(event_id, GapStatus.RECOMPOSING)
+
+    async_event = dict(event)
+    async_event["headers"] = {
+        key: value for key, value in (event.get("headers") or {}).items()
+        if key.lower() != "authorization"
+    }
+    async_event["_crewAgentAction"] = "RUN"
+    async_event["_previousStatus"] = previous_status
+    async_event["_entityType"] = entity_type
+    async_event["_entityId"] = entity_id
+    try:
+        _invoke_self(async_event, context)
+    except Exception:
+        if entity_type == "REQUEST":
+            _set_request_status(entity_id, previous_status)
+        else:
+            _set_gap_status(entity_id, previous_status)
+        raise
+    return success({"status": "PROCESSING", "entityId": entity_id}, status_code=202)
+
+
 def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
+    if event.get("_crewAgentAction") == "RUN":
+        response = router.dispatch(event)
+        if int(response.get("statusCode", 500)) >= 400:
+            if event.get("_entityType") == "REQUEST":
+                _set_request_status(event["_entityId"], event.get("_previousStatus") or RequestStatus.REQUESTED)
+            elif event.get("_entityType") == "GAP":
+                _set_gap_status(event["_entityId"], GapStatus.FAILED)
+        return response
+    if ASYNC_ENABLED:
+        try:
+            return _start_async(event, _context)
+        except ApiError as exc:
+            return exc.to_response()
+        except Exception:
+            logger.exception("crew_agent_async_start_failed")
+            return ApiError(ErrorCode.INTERNAL_ERROR, "AI 편성 작업을 시작하지 못했습니다.").to_response()
     return router.dispatch(event)

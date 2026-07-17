@@ -14,8 +14,11 @@ import type {
   Recommendation,
   GapEvent,
   SpecReportRequest,
+  SpecReportJobState,
 } from '../types';
 import { SEED_ACCOUNTS, SEED_OFFICES, mockState, setCurrentUserId, getCurrentUserId, registerAccount } from './state';
+
+const mockReportJobs = new Map<string, SpecReportJobState>();
 
 export const handlers: Record<string, (body?: unknown, pathParam?: string) => Promise<ApiResponse<unknown>>> = {
   // === 인증 ===
@@ -490,6 +493,32 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
         humanReviewItems: [], generatedAt: nowValue,
       }, markdown, persisted: false,
     } };
+  },
+
+  'POST /reports/spec-gap/jobs': async (body) => {
+    const reportId = `mock-${Date.now()}`;
+    mockReportJobs.set(reportId, { reportId, status: 'PROCESSING' });
+    void handlers['POST /reports/spec-gap'](body).then((response) => {
+      if (response.success) {
+        const completed = response.data as { report: SpecReportJobState['report']; markdown?: string };
+        mockReportJobs.set(reportId, {
+          reportId,
+          status: 'COMPLETED',
+          report: completed.report ? { ...completed.report, reportId } : undefined,
+          markdown: completed.markdown,
+          persisted: true,
+        });
+      } else {
+        mockReportJobs.set(reportId, { reportId, status: 'FAILED', error: response.error });
+      }
+    });
+    return { success: true, data: { reportId, status: 'PROCESSING' } };
+  },
+
+  'GET /reports/spec-gap/jobs/{reportId}': async (_body, reportId?: string) => {
+    const job = reportId ? mockReportJobs.get(reportId) : undefined;
+    if (!job) return { success: false, error: { code: 'REPORT_NOT_FOUND', message: '저장된 보고서를 찾을 수 없습니다.' } };
+    return { success: true, data: job };
   },
 
   'GET /office/requests': async () => {

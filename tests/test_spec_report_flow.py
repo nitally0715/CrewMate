@@ -115,6 +115,67 @@ def test_31_persist_true_writes_json_and_markdown():
     assert stored["markdownS3Key"].endswith("report.md")
 
 
+def test_async_report_id_is_used_for_s3_keys():
+    storage = FakeStorage()
+    report, _, stored = _service(storage).generate(
+        _applicant(True), offline=True, report_id="job-123"
+    )
+    assert report.report_id == "job-123"
+    assert stored["jsonS3Key"] == "reports/job-123/report.json"
+
+
+def test_spec_report_job_start_is_owned_and_invoked_asynchronously(monkeypatch):
+    class Storage:
+        def __init__(self):
+            self.started = None
+
+        def start_job(self, report_id, **kwargs):
+            self.started = (report_id, kwargs)
+
+        def fail_job(self, *_args):
+            raise AssertionError("job must not fail")
+
+    storage = Storage()
+    invoked = []
+    monkeypatch.setattr(lambda_app, "_storage", lambda: storage)
+    monkeypatch.setattr(lambda_app, "_invoke_async", lambda payload, _context: invoked.append(payload))
+    response = lambda_app.lambda_handler({
+        "httpMethod": "POST",
+        "path": "/reports/spec-gap/jobs",
+        "body": _applicant(False).model_dump_json(by_alias=True),
+        "requestContext": {"authorizer": {"claims": {
+            "sub": "worker-sub", "custom:role": "WORKER",
+        }}},
+    }, None)
+
+    body = json.loads(response["body"])
+    assert response["statusCode"] == 202
+    assert storage.started[1]["owner_user_id"] == "worker-sub"
+    assert invoked[0]["reportId"] == body["reportId"]
+    assert invoked[0]["applicant"]["persistReport"] is True
+
+
+def test_spec_report_job_can_only_be_read_by_owner(monkeypatch):
+    class Storage:
+        def get_job(self, _report_id):
+            return {"report_id": "job-1", "owner_user_id": "owner", "status": "COMPLETED"}
+
+        def read(self, _report_id):
+            return {"report": {"reportId": "job-1"}, "persisted": True}
+
+    monkeypatch.setattr(lambda_app, "_storage", lambda: Storage())
+    event = {
+        "httpMethod": "GET",
+        "path": "/reports/spec-gap/jobs/job-1",
+        "pathParameters": {"reportId": "job-1"},
+        "requestContext": {"authorizer": {"claims": {
+            "sub": "other", "custom:role": "WORKER",
+        }}},
+    }
+    response = lambda_app.lambda_handler(event, None)
+    assert response["statusCode"] == 403
+
+
 def test_32_cache_record_has_no_applicant_personal_data():
     from spec_report.qnet import DynamoQualificationCache
 

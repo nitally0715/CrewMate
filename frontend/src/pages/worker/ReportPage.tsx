@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api } from '../../api/client';
-import type { SpecReportRequest, SpecReportResponse, Trade, Worker } from '../../api/types';
+import type { SpecReportJobStart, SpecReportJobState, SpecReportRequest, SpecReportResponse, Trade, Worker } from '../../api/types';
+
+const LAST_REPORT_JOB_KEY = 'crewmate:last-spec-report-job';
 
 const TARGET_OPTIONS = [
   '건축목공시공', '철근콘크리트시공', '조적미장시공', '타일석공시공', '방수시공',
@@ -21,6 +23,7 @@ export default function ReportPage() {
   const [targetTrade, setTargetTrade] = useState(TARGET_OPTIONS[0]);
   const [result, setResult] = useState<SpecReportResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [jobId, setJobId] = useState<string | null>(() => localStorage.getItem(LAST_REPORT_JOB_KEY));
 
   useEffect(() => {
     (async () => {
@@ -38,6 +41,54 @@ export default function ReportPage() {
     })();
   }, [navigate]);
 
+  useEffect(() => {
+    if (!jobId) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const stopPolling = () => {
+      if (timer !== undefined) window.clearInterval(timer);
+    };
+
+    const loadJob = async () => {
+      const response = await api.get<SpecReportJobState>(`/reports/spec-gap/jobs/${jobId}`);
+      if (cancelled) return;
+      if (!response.success) {
+        if (['REPORT_NOT_FOUND', 'HTTP_404', 'HTTP_403'].includes(response.error.code)) {
+          localStorage.removeItem(LAST_REPORT_JOB_KEY);
+          setJobId(null);
+        }
+        setLoading(false);
+        stopPolling();
+        return;
+      }
+      if (response.data.status === 'COMPLETED' && response.data.report) {
+        setResult({
+          report: response.data.report,
+          markdown: response.data.markdown,
+          persisted: Boolean(response.data.persisted),
+          status: 'COMPLETED',
+        });
+        setLoading(false);
+        stopPolling();
+      } else if (response.data.status === 'FAILED') {
+        setLoading(false);
+        localStorage.removeItem(LAST_REPORT_JOB_KEY);
+        setJobId(null);
+        stopPolling();
+        toast.error(response.data.error?.message || '보고서 생성에 실패했습니다.');
+      } else {
+        setLoading(true);
+      }
+    };
+
+    loadJob();
+    timer = window.setInterval(loadJob, 3000);
+    return () => {
+      cancelled = true;
+      stopPolling();
+    };
+  }, [jobId]);
+
   const inputSummary = useMemo(() => ({
     certifications: worker?.certifications || [],
     abilities: worker?.abilities || [],
@@ -52,16 +103,21 @@ export default function ReportPage() {
       targetSpecialty: worker.preferred_trades.join(', '),
       certifications: inputSummary.certifications,
       abilities: inputSummary.abilities,
-      persistReport: false,
+      persistReport: true,
     };
-    const response = await api.post<SpecReportResponse>('/reports/spec-gap', payload, 90000);
-    setLoading(false);
-    if (response.success) setResult(response.data);
-    else toast.error(response.error.message);
+    const response = await api.post<SpecReportJobStart>('/reports/spec-gap/jobs', payload);
+    if (response.success) {
+      localStorage.setItem(LAST_REPORT_JOB_KEY, response.data.reportId);
+      setJobId(response.data.reportId);
+      toast.success('보고서 생성을 시작했습니다. 다른 화면을 이용해도 계속 진행됩니다.');
+    } else {
+      setLoading(false);
+      toast.error(response.error.message);
+    }
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-4">
+    <div className="max-w-lg mx-auto space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <p className="text-xs text-green-700 font-medium">자격·NCS 근거 분석</p>
@@ -70,8 +126,8 @@ export default function ReportPage() {
         <button onClick={() => navigate('/worker')} className="text-sm text-gray-500 hover:text-gray-800">← 돌아가기</button>
       </div>
 
-      <section className="bg-white rounded-lg border border-gray-200 p-6">
-        <div className="grid md:grid-cols-[1fr_auto] gap-4 items-end">
+      <section className="bg-white rounded-lg border border-gray-200 p-6 space-y-5">
+        <div className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">분석할 직종</label>
             <select value={targetTrade} onChange={(event) => setTargetTrade(event.target.value)}
@@ -80,27 +136,24 @@ export default function ReportPage() {
             </select>
           </div>
           <button onClick={generate} disabled={loading || !worker}
-            className="bg-green-600 text-white px-6 py-2.5 rounded-md text-sm font-medium hover:bg-green-700 disabled:opacity-50">
-            {loading ? '근거를 확인하는 중...' : '보고서 생성'}
+            className="w-full bg-green-600 text-white px-6 py-2.5 rounded-md text-sm font-medium hover:bg-green-700 disabled:opacity-50">
+            {loading ? '보고서 생성 중...' : result ? '새 보고서 생성' : '보고서 생성'}
           </button>
         </div>
         <div className="mt-4 grid md:grid-cols-2 gap-3 text-xs">
           <InputChips title="지원서 자격증" values={inputSummary.certifications} />
           <InputChips title="지원서 보유 능력" values={inputSummary.abilities} />
         </div>
-        <p className="mt-3 text-xs text-gray-400">보고서는 조회할 때만 생성하며 S3에 자동 저장하지 않습니다.</p>
+        <p className="text-xs text-gray-400">완료 보고서는 S3에 저장되어 다시 열 수 있으며, 31일 후 Standard-IA로 전환되고 61일 후 삭제됩니다.</p>
       </section>
 
       {loading && (
-        <div className="bg-white rounded-lg border border-gray-200 p-10 text-center">
-          <div className="w-8 h-8 rounded-full border-4 border-green-100 border-t-green-600 animate-spin mx-auto mb-3" />
-          <p className="text-sm text-gray-600">구조화 규칙, Bedrock Knowledge Base, Q-Net 근거를 확인하고 있습니다.</p>
-        </div>
+        <ReportSkeleton />
       )}
 
       {result && (
         <>
-          <section className="grid grid-cols-3 gap-3">
+          <section className="grid grid-cols-3 gap-2">
             <Metric label="충족 자격그룹" value={`${result.report.satisfiedCertificationGroups.length}개`} />
             <Metric label="부족 핵심그룹" value={`${result.report.missingCoreCertificationGroups.length}개`} tone="red" />
             <Metric label="능력 커버리지" value={`${result.report.abilityCoverage.percentage}%`} />
@@ -157,6 +210,26 @@ function Metric({ label, value, tone = 'green' }: { label: string; value: string
     <div className="bg-white rounded-lg border border-gray-200 p-4 text-center">
       <p className={`text-2xl font-bold ${tone === 'red' ? 'text-red-600' : 'text-green-700'}`}>{value}</p>
       <p className="text-xs text-gray-500 mt-1">{label}</p>
+    </div>
+  );
+}
+
+function ReportSkeleton() {
+  return (
+    <div className="space-y-3" aria-label="보고서 생성 중">
+      <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+        <p className="text-sm font-medium text-green-800">보고서를 생성하고 있습니다</p>
+        <p className="text-xs text-green-700 mt-1">이 화면을 벗어나도 작업은 계속되며, 돌아오면 자동으로 결과를 불러옵니다.</p>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        {[0, 1, 2].map((item) => <div key={item} className="h-20 rounded-lg bg-gray-100 animate-pulse" />)}
+      </div>
+      <div className="bg-white border border-gray-200 rounded-lg p-6 space-y-3">
+        <div className="h-4 bg-gray-200 rounded animate-pulse w-1/3" />
+        <div className="h-3 bg-gray-100 rounded animate-pulse" />
+        <div className="h-3 bg-gray-100 rounded animate-pulse w-5/6" />
+        <div className="h-3 bg-gray-100 rounded animate-pulse w-2/3" />
+      </div>
     </div>
   );
 }

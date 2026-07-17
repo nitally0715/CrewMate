@@ -137,6 +137,7 @@ class SpecReportService:
         offline: bool = False,
         refresh_qnet: bool = False,
         json_only: bool = False,
+        report_id: str | None = None,
     ) -> tuple[SpecGapReport, str | None, dict[str, str]]:
         started = time.monotonic()
         structured = analyze_gap(applicant, self.repository)
@@ -217,6 +218,8 @@ class SpecReportService:
         if report is None:
             extras = ["LLM 보고서 작성 실패로 구조화 결과 기반 보고서를 생성했다."] if first_error else []
             report = build_fallback_report(structured, kb_results, qnet_results, extra_limitations=extras)
+        if report_id:
+            report.report_id = report_id
         validate_report(report, structured, kb_results, qnet_results, plan)
 
         markdown = None if json_only else render_markdown(report)

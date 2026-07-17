@@ -13,3 +13,28 @@ def test_office_core_can_read_related_company_and_office_records() -> None:
 
     assert "DynamoDBReadPolicy: { TableName: !Ref CompaniesTable }" in block
     assert "DynamoDBReadPolicy: { TableName: !Ref OfficesTable }" in block
+
+
+def test_report_storage_moves_to_standard_ia_then_expires() -> None:
+    template = (Path(__file__).parents[1] / "template.yaml").read_text(encoding="utf-8")
+    bucket = _resource_block(template, "ReportOutputBucket", "ReportOutputBucketPolicy")
+
+    assert "StorageClass: STANDARD_IA" in bucket
+    assert "TransitionInDays: !Ref ReportStandardIaTransitionDays" in bucket
+    assert "ExpirationInDays: !Ref ReportRetentionDays" in bucket
+    assert "ObjectSizeGreaterThan: 0" in bucket
+    assert "Default: 61" in template
+    assert "StorageClass: GLACIER" not in bucket
+
+
+def test_agent_lambdas_have_async_self_invoke_permissions() -> None:
+    template = (Path(__file__).parents[1] / "template.yaml").read_text(encoding="utf-8")
+    crew = _resource_block(template, "AgentInvokeFunction", "SpecReportAgentFunction")
+    report = template[
+        template.index("  SpecReportAgentFunction:"):template.index("\nOutputs:")
+    ]
+
+    assert "CREW_AGENT_ASYNC_ENABLED: \"true\"" in crew
+    assert "lambda:InvokeFunction" in crew
+    assert "lambda:InvokeFunction" in report
+    assert "s3:GetObject" in report and "s3:PutObject" in report

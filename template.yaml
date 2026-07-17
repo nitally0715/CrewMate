@@ -44,7 +44,7 @@ Parameters:
     Description: Bedrock 호출·검증 실패 시 결정론적 규칙 기반 추천으로 폴백할지 여부.
   AgentInvokeTimeoutSeconds:
     Type: String
-    Default: "45"
+    Default: "90"
     Description: 단일 Bedrock compose 호출의 벽시계 상한(초).
 
   # --- Applicant Spec Gap Report Agent 설정 ---
@@ -85,8 +85,12 @@ Parameters:
     Default: "604800"
   ReportRetentionDays:
     Type: Number
-    Default: 30
-    MinValue: 1
+    Default: 61
+    MinValue: 61
+  ReportStandardIaTransitionDays:
+    Type: Number
+    Default: 31
+    MinValue: 31
 
 Conditions:
   HasKnowledgeBase: !Not [!Equals [!Ref KnowledgeBaseId, ""]]
@@ -329,6 +333,10 @@ Resources:
           - Id: ExpireApplicantReports
             Status: Enabled
             Prefix: reports/
+            ObjectSizeGreaterThan: 0
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: !Ref ReportStandardIaTransitionDays
             ExpirationInDays: !Ref ReportRetentionDays
 
   ReportOutputBucketPolicy:
@@ -702,7 +710,7 @@ Resources:
       FunctionName: !Sub "crewmate-agent-invoke-${Stage}"
       CodeUri: backend/
       Handler: functions.agent_invoke.app.lambda_handler
-      Timeout: 60
+      Timeout: 120
       MemorySize: 512
       Layers:
         - !Ref AgentDepsLayer
@@ -713,6 +721,7 @@ Resources:
           CREW_AGENT_TEMPERATURE: !Ref CrewAgentTemperature
           AGENT_FALLBACK_ENABLED: !Ref AgentFallbackEnabled
           AGENT_INVOKE_TIMEOUT_S: !Ref AgentInvokeTimeoutSeconds
+          CREW_AGENT_ASYNC_ENABLED: "true"
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref CrewsTable }
         - DynamoDBCrudPolicy: { TableName: !Ref GapEventsTable }
@@ -728,6 +737,9 @@ Resources:
               Resource:
                 - !Sub "arn:aws:bedrock:*::foundation-model/${CrewAgentFoundationModelId}"
                 - !Sub "arn:aws:bedrock:${CrewAgentRegion}:${AWS::AccountId}:inference-profile/${CrewAgentModelId}"
+            - Effect: Allow
+              Action: [lambda:InvokeFunction]
+              Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:crewmate-agent-invoke-${Stage}"
       Events:
         AgentCompose:
           Type: Api
@@ -746,7 +758,7 @@ Resources:
       Runtime: python3.13
       CodeUri: backend/
       Handler: functions.spec_report.app.lambda_handler
-      Timeout: 90
+      Timeout: 180
       MemorySize: 1024
       Layers:
         - !Ref ReportDepsLayer
@@ -770,28 +782,33 @@ Resources:
           QNET_TIMEOUT_SECONDS: "5"
           QNET_MAX_RETRIES: "1"
           QNET_MIN_INTERVAL_SECONDS: "0.5"
+          REPORT_JOBS_TTL_SECONDS: "5270400"
       Policies:
         - Statement:
             - Sid: QualificationEvidenceCacheAccess
               Effect: Allow
               Action: [dynamodb:GetItem, dynamodb:PutItem]
               Resource: !GetAtt QualificationEvidenceCache.Arn
-            - Sid: SpecReportJobMetadataWrite
+            - Sid: SpecReportJobMetadataAccess
               Effect: Allow
-              Action: [dynamodb:PutItem]
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem]
               Resource: !GetAtt SpecReportJobs.Arn
             - Sid: ReadAuthoritativeRules
               Effect: Allow
               Action: [s3:GetObject]
               Resource: !Sub "${KnowledgeSourceBucket.Arn}/rules/*"
-            - Sid: WriteRequestedReportsOnly
+            - Sid: ReadWriteRequestedReportsOnly
               Effect: Allow
-              Action: [s3:PutObject]
+              Action: [s3:GetObject, s3:PutObject]
               Resource: !Sub "${ReportOutputBucket.Arn}/reports/*"
             - Sid: EncryptRequestedReports
               Effect: Allow
-              Action: [kms:Encrypt, kms:GenerateDataKey]
+              Action: [kms:Encrypt, kms:Decrypt, kms:GenerateDataKey]
               Resource: !GetAtt ReportKmsKey.Arn
+            - Sid: InvokeAsyncReportWorker
+              Effect: Allow
+              Action: [lambda:InvokeFunction]
+              Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:crewmate-spec-report-agent-${Stage}"
             - Sid: RetrieveConfiguredKnowledgeBase
               Effect: Allow
               Action: [bedrock:Retrieve]
@@ -809,6 +826,12 @@ Resources:
         GenerateSpecReport:
           Type: Api
           Properties: { RestApiId: !Ref CrewMateApi, Path: /reports/spec-gap, Method: post }
+        StartSpecReportJob:
+          Type: Api
+          Properties: { RestApiId: !Ref CrewMateApi, Path: /reports/spec-gap/jobs, Method: post }
+        GetSpecReportJob:
+          Type: Api
+          Properties: { RestApiId: !Ref CrewMateApi, Path: "/reports/spec-gap/jobs/{reportId}", Method: get }
 
 # ---------------------------------------------------------------------------
 # 출력값

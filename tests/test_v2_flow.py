@@ -344,3 +344,25 @@ def test_agent_compose_produces_recommendations(tables):
     assert all(m["assigned_trade"] == "GENERAL" for m in rec["members"])
     assert rec["total_cost"] == sum(m["offered_wage"] for m in rec["members"])
     assert tables.get_request("REQ1")["status"] == "PROPOSED"
+
+
+def test_agent_compose_can_start_asynchronously_without_forwarding_token(tables, monkeypatch):
+    import functions.agent_invoke.app as agent_app
+
+    _seed_request(tables, "REQ1", count=1)
+    invoked = []
+    monkeypatch.setattr(agent_app, "ASYNC_ENABLED", True)
+    monkeypatch.setattr(agent_app, "_invoke_self", lambda event, _context: invoked.append(event))
+    event = make_event(
+        "POST", "/office/requests/REQ1/agent-compose",
+        role="OFFICE", office_id=OFFICE, path_params={"requestId": "REQ1"},
+    )
+    event["headers"] = {"Authorization": "Bearer secret", "X-Test": "kept"}
+
+    response = agent_app.lambda_handler(event, None)
+
+    assert response["statusCode"] == 202
+    assert tables.get_request("REQ1")["status"] == "COMPOSING"
+    assert invoked[0]["_crewAgentAction"] == "RUN"
+    assert "Authorization" not in invoked[0]["headers"]
+    assert invoked[0]["headers"]["X-Test"] == "kept"

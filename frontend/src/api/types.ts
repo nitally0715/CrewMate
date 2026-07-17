@@ -368,6 +368,21 @@ export interface SpecReportResponse {
   report: SpecGapReport;
   markdown?: string;
   persisted: boolean;
+  status?: 'COMPLETED';
+}
+
+export interface SpecReportJobStart {
+  reportId: string;
+  status: 'PROCESSING';
+}
+
+export interface SpecReportJobState {
+  reportId?: string;
+  status: 'PROCESSING' | 'COMPLETED' | 'FAILED';
+  report?: SpecGapReport;
+  markdown?: string;
+  persisted?: boolean;
+  error?: { code: string; message: string };
 }
 
 // === Company API 요청 ===
