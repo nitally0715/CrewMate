@@ -2,9 +2,21 @@ import type { ReactNode } from 'react';
 
 const NCS_CODE = /\s*\(?\b\d{8,12}_\d+(?:v\d+)?\b\)?/gi;
 const REPORT_ID_SUFFIX = /\s*\((?:spec-[a-f0-9]+|mock-\d+|[0-9a-f]{8}-[0-9a-f-]{27,})\)\s*$/i;
+const TRADE_NAMES: Record<string, string> = {
+  FORMWORK: '형틀목공',
+  REBAR: '철근공',
+  MASONRY: '조적공',
+  MATERIAL_CARRY: '자재운반',
+  GENERAL: '보통인부',
+  ANY: '직종 무관',
+};
 
 export function humanizeReportText(value: string): string {
-  return value
+  let text = value;
+  Object.entries(TRADE_NAMES).forEach(([code, label]) => {
+    text = text.replace(new RegExp(`\\b${code}\\b`, 'gi'), label);
+  });
+  return text
     .replace(NCS_CODE, '')
     .replace(REPORT_ID_SUFFIX, '')
     .replace(/\s+—\s*$/g, '')
@@ -45,18 +57,21 @@ export default function MarkdownReport({ markdown }: { markdown: string }) {
       index += 1;
       continue;
     }
-    const heading = raw.match(/^(#{1,3})\s+(.+)$/);
+    const heading = raw.match(/^(#{1,4})\s+(.+)$/);
     if (heading) {
       const level = heading[1].length;
       const classes = level === 1
         ? 'text-xl font-bold text-gray-900 mt-1 mb-4'
         : level === 2
           ? 'text-base font-semibold text-gray-900 mt-7 mb-3 pb-2 border-b border-gray-100'
-          : 'text-sm font-semibold text-gray-800 mt-5 mb-2';
+          : level === 3
+            ? 'text-sm font-semibold text-gray-800 mt-5 mb-2'
+            : 'text-xs font-semibold text-green-800 mt-4 mb-1.5';
       const children = inlineMarkdown(heading[2]);
       if (level === 1) content.push(<h1 key={index} className={classes}>{children}</h1>);
       else if (level === 2) content.push(<h2 key={index} className={classes}>{children}</h2>);
-      else content.push(<h3 key={index} className={classes}>{children}</h3>);
+      else if (level === 3) content.push(<h3 key={index} className={classes}>{children}</h3>);
+      else content.push(<h4 key={index} className={classes}>{children}</h4>);
       index += 1;
       continue;
     }

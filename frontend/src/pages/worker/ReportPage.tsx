@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { api } from '../../api/client';
 import type { SpecReportJobStart, SpecReportJobState, SpecReportJobSummary, SpecReportRequest, SpecReportResponse, Trade, Worker } from '../../api/types';
 import MarkdownReport, { humanizeReportText } from '../../components/MarkdownReport';
+import { tradeText } from '../../lib/trades';
 
 const LAST_REPORT_JOB_KEY = 'crewmate:last-spec-report-job';
 
@@ -118,7 +119,7 @@ export default function ReportPage() {
     setResult(null);
     const payload: SpecReportRequest = {
       targetTrade,
-      targetSpecialty: worker.preferred_trades.join(', '),
+      targetSpecialty: worker.preferred_trades.map((trade) => tradeText(trade)).join(', '),
       certifications: inputSummary.certifications,
       abilities: inputSummary.abilities,
       persistReport: true,

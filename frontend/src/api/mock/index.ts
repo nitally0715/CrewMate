@@ -479,7 +479,13 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
       `# ${payload.targetTrade} 스펙 보완 보고서`, '', '## 종합 의견',
       missing ? `핵심 자격그룹이 충족되지 않았습니다. ${requirements.join(', ')} 중 하나 이상을 검토하세요.` : `핵심 자격그룹을 충족했습니다: ${matches.join(', ')}`,
       '', '## 분석 범위', `지원서 자격증 ${payload.certifications.length}개와 보유 능력 ${payload.abilities.length}개를 기준으로 분석했습니다.`,
-      '', '## 주의사항과 확인 필요 항목', '현재 화면은 mock 모드의 예시 보고서입니다. 운영 모드에서는 Bedrock Knowledge Base와 Q-Net 근거가 연결됩니다.',
+      `세부 작업: ${payload.targetSpecialty || '미지정'}`,
+      '', '## 근거 및 출처', '### Q-Net 공식 자격 정보', '- 로컬 예시 화면에서는 공식 사이트를 조회하지 않습니다.',
+      '### 내부 Knowledge Base 참고 자료', `- 참고한 자격증: ${requirements.join(', ') || '없음'}`,
+      '', '## 주의사항과 확인 필요 항목',
+      '- 이 보고서는 지원서와 내부 기준 자료를 바탕으로 작성한 참고용 안내이며, 자격 취득·응시 가능 여부나 채용을 보장하지 않습니다.',
+      '- 시험 일정, 응시자격, 수수료는 신청 전에 Q-Net 공식 페이지에서 최신 내용을 직접 확인하세요.',
+      '- 현장별 실제 자격·능력 요구사항은 인력사무소 또는 건설사에 최종 확인하세요.',
     ].join('\n');
     return { success: true, data: {
       report: {

@@ -28,5 +28,8 @@
 22. 추천 자격증은 `structuredGapAnalysis`의 부족 핵심·추천 자격그룹에 있는 자격만 사용한다. Q-Net 결과를 근거로 다른 자격을 새로 추천하지 않는다.
 23. Q-Net 도구는 공식 자격명, 하는 일, 응시자격, 취득방법, 시험 일정, 수수료 확인용이다. 확인되지 않은 일정·비용·방법을 추측하지 않는다.
 24. 최종 Markdown에서는 Lambda가 추천 자격증 이름에 Q-Net 링크와 확인된 취득 정보를 결합한다. 별도의 원시 "Q-Net 공식 확인 결과" 목록을 만들지 않는다.
+25. 사용자가 읽는 문장에는 `FORMWORK`, `REBAR`, `MASONRY`, `MATERIAL_CARRY`, `GENERAL`, `ANY` 같은 내부 직종 코드를 쓰지 않고 한국어 직종명을 사용한다.
+26. Q-Net 표나 원문을 그대로 재출력하지 않는다. Lambda가 검증된 필드를 자격 정보, 응시·취득 안내, 시험 일정, 수수료로 나누어 표시한다.
+27. `limitations`, `conflicts`, `humanReviewItems`에는 검증에 필요한 사실만 짧게 남긴다. 사용자용 Markdown의 면책 안내와 출처 목록은 Lambda가 일관된 형식으로 작성한다.
 
 `evidencePlan`의 각 항목에 가능한 근거를 연결하되, 확인 실패는 limitations/humanReviewItems로 남긴다. Q-Net 원문 결과는 재출력하지 말고 미확인·충돌 사항만 limitations/humanReviewItems에 짧게 쓴다. 사용자용 추천 자격증 링크와 취득 안내는 Lambda가 검증된 Q-Net 원본 필드로 렌더링한다. 근거를 만들거나 추측하지 않는다.

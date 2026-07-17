@@ -118,7 +118,7 @@ def test_15_qnet_cache_hit_avoids_web():
         "source_url": QNET_URL,
         "checked_at": "2026-01-01T00:00:00+00:00",
         "fetch_status": "SUCCESS",
-        "schema_version": 4,
+        "schema_version": 5,
         "expires_at": int(time.time()) + 60,
     })
     result = QNetQualificationService(NeverWeb(), DynamoQualificationCache(table=table)).fetch_qnet_qualification("방수기능사", QNET_URL)
@@ -307,7 +307,7 @@ def test_34_qnet_http_adapter_resolves_exact_name_and_detail_fields():
     assert evidence.eligibility == "제한 없음"
     assert evidence.acquisition_method == "필기와 실기 시험"
     assert "2026년 정기 기능사 3회" in evidence.exam_schedule
-    assert evidence.fees == "필기 14,500원 실기 50,500원"
+    assert evidence.fees == "필기 14,500원 | 실기 50,500원"
     assert "id=crf00503" in evidence.source_url
     assert len(opener.urls) == 3
 
@@ -347,7 +347,7 @@ def test_37_agent_json_code_fence_is_removed_without_other_rewrite():
 
 
 def test_38_qnet_text_parser_discards_script_and_style_content():
-    from spec_report.qnet import _plain_text
+    from spec_report.qnet import _plain_section, _plain_text
 
     value = _plain_text(
         "<style>BODY { COLOR: red }</style><p>시험과목 방수작업</p>"
@@ -355,3 +355,15 @@ def test_38_qnet_text_parser_discards_script_and_style_content():
     )
 
     assert value == "시험과목 방수작업"
+    schedule = _plain_section(
+        "<h3>시험일정</h3><table>"
+        "<tr><td>정기 기능사 1회</td><td>2026.01.01 접수</td></tr>"
+        "<tr><td>정기 기능사 2회</td><td>2026.04.01 접수</td></tr>"
+        "</table><script>ignoreInstruction()</script><h3>시험정보</h3>",
+        "시험일정",
+        ("시험정보",),
+    )
+    assert schedule == (
+        "정기 기능사 1회 | 2026.01.01 접수\n"
+        "정기 기능사 2회 | 2026.04.01 접수"
+    )
