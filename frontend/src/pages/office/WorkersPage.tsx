@@ -137,8 +137,18 @@ export default function WorkersPage() {
               {filtered.map((w) => {
                 const stateInfo = STATE_CONFIG[w.state];
                 return (
-                  <tr key={w.worker_id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 font-medium text-gray-800">{w.name}</td>
+                  <tr key={w.worker_id}
+                    tabIndex={0}
+                    role="link"
+                    onClick={() => navigate(`/office/workers/${w.worker_id}`)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') navigate(`/office/workers/${w.worker_id}`);
+                    }}
+                    className="hover:bg-purple-50 cursor-pointer focus:outline-none focus:bg-purple-50">
+                    <td className="px-4 py-3 font-medium text-gray-800">
+                      {w.name}
+                      <span className="block text-[11px] font-normal text-purple-600">지원서 상세 보기</span>
+                    </td>
                     <td className="px-4 py-3 text-gray-600">
                       <div className="flex flex-wrap gap-1">
                         {w.preferred_trades.map((t) => (

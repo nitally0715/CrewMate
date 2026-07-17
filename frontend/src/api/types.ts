@@ -99,6 +99,8 @@ export interface Worker {
   region: string;
   desired_daily_wage: number;
   certifications: string[];
+  abilities?: string[];
+  introduction?: string;
   completed_count: number;
   no_show_count: number;
   // 평점(5점 만점 평균)·출근 수·배차완료 수 (본인/사무소 응답에 노출)
@@ -181,6 +183,23 @@ export interface AcceptedJob {
   offered_wage: number;
   status: string;
   accepted_at: string;
+}
+
+export interface WorkerAssignment {
+  crew_id: string;
+  request_id: string;
+  site_name: string;
+  work_date: string;
+  start_time: string;
+  location_text: string;
+  status: string;
+  assigned_trade: Trade;
+  offered_wage: number;
+  acceptance: AcceptanceStatus;
+  is_replacement: boolean;
+  eta?: string | null;
+  required_workers: RequiredWorker[];
+  notes: string;
 }
 
 // 출근일 히트맵: work_date -> 출근 횟수
@@ -292,7 +311,63 @@ export interface WorkerApplicationRequest {
   region: string;
   desired_daily_wage: number;
   certifications: string[];
+  abilities?: string[];
   introduction?: string;
+}
+
+export interface SpecReportRequest {
+  targetTrade: string;
+  targetSpecialty?: string;
+  certifications: string[];
+  abilities: string[];
+  persistReport: boolean;
+}
+
+export interface SpecCertificationGroup {
+  groupName: string;
+  importance: string;
+  selectionRule: string;
+  certificationNames: string[];
+  matchedCertifications: string[];
+  satisfied: boolean;
+}
+
+export interface SpecAbilityDecision {
+  abilityName: string;
+  ncsCode: string;
+  ncsSubcategory: string;
+  matched: boolean;
+  matchedInput?: string | null;
+}
+
+export interface SpecGapReport {
+  reportId: string;
+  targetTrade: string;
+  targetSpecialty?: string | null;
+  analysisScope: string;
+  normalizedCertifications: Array<{
+    inputName: string;
+    normalizedName?: string | null;
+    matched: boolean;
+    qualificationStatus?: string | null;
+    qnetUrl?: string | null;
+  }>;
+  satisfiedCertificationGroups: SpecCertificationGroup[];
+  missingCoreCertificationGroups: SpecCertificationGroup[];
+  recommendedCertificationGroups: SpecCertificationGroup[];
+  abilityCoverage: { matched: number; required: number; percentage: number };
+  matchedAbilities: SpecAbilityDecision[];
+  missingAbilities: SpecAbilityDecision[];
+  priorityActions: Array<{ priority: number; itemName: string; itemType: string; reason: string }>;
+  limitations: string[];
+  humanReviewItems: string[];
+  generatedAt: string;
+}
+
+export interface SpecReportResponse {
+  report: SpecGapReport;
+  markdown?: string;
+  persisted: boolean;
 }
 
 // === Company API 요청 ===

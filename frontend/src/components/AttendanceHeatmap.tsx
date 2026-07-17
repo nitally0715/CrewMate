@@ -10,13 +10,6 @@ function toKey(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-function cellColor(count: number): string {
-  if (count <= 0) return 'bg-gray-100';
-  if (count === 1) return 'bg-green-300';
-  if (count === 2) return 'bg-green-500';
-  return 'bg-green-700';
-}
-
 export default function AttendanceHeatmap({ attendance }: { attendance: AttendanceMap }) {
   const end = new Date();
   end.setHours(0, 0, 0, 0);
@@ -36,7 +29,7 @@ export default function AttendanceHeatmap({ attendance }: { attendance: Attendan
     if (cursor > end && week.length === 7) break;
   }
 
-  const total = Object.values(attendance).reduce((s, n) => s + n, 0);
+  const total = Object.values(attendance).filter((count) => count > 0).length;
 
   return (
     <div>
@@ -46,24 +39,34 @@ export default function AttendanceHeatmap({ attendance }: { attendance: Attendan
             {week.map((cell) => (
               <div
                 key={cell.key}
-                title={`${cell.key}${cell.count ? ` · 출근 ${cell.count}회` : ''}`}
-                className={`w-3 h-3 rounded-sm ${cell.future ? 'bg-transparent' : cellColor(cell.count)}`}
+                title={cell.future ? undefined : `${cell.key} · ${cell.count ? '근무 기록 있음' : '근무 기록 없음'}`}
+                aria-hidden={cell.future}
+                aria-label={cell.future ? undefined : `${cell.key} ${cell.count ? '근무함' : '근무하지 않음'}`}
+                className={`w-3 h-3 rounded-sm ${cell.future ? 'bg-transparent' : cell.count ? 'bg-green-600' : 'bg-gray-100'}`}
               />
             ))}
           </div>
         ))}
       </div>
       <div className="flex items-center justify-between mt-2 text-[11px] text-gray-400">
-        <span>최근 약 4개월 · 총 출근 {total}일</span>
+        <span>최근 약 4개월 · 근무 {total}일</span>
         <span className="flex items-center gap-1">
-          적음
           <span className="w-2.5 h-2.5 rounded-sm bg-gray-100 inline-block" />
-          <span className="w-2.5 h-2.5 rounded-sm bg-green-300 inline-block" />
-          <span className="w-2.5 h-2.5 rounded-sm bg-green-500 inline-block" />
-          <span className="w-2.5 h-2.5 rounded-sm bg-green-700 inline-block" />
-          많음
+          기록 없음
+          <span className="w-2.5 h-2.5 rounded-sm bg-green-600 inline-block ml-1" />
+          근무함
         </span>
       </div>
+      {Object.keys(attendance).some((key) => attendance[key] > 0) && (
+        <p className="mt-2 text-[11px] text-gray-500">
+          최근 근무일: {Object.keys(attendance)
+            .filter((key) => attendance[key] > 0)
+            .sort()
+            .reverse()
+            .slice(0, 5)
+            .join(', ')}
+        </p>
+      )}
     </div>
   );
 }

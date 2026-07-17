@@ -13,6 +13,7 @@ import type {
   RequiredTrade,
   Recommendation,
   GapEvent,
+  SpecReportRequest,
 } from '../types';
 import { SEED_ACCOUNTS, SEED_OFFICES, mockState, setCurrentUserId, getCurrentUserId, registerAccount } from './state';
 
@@ -224,7 +225,14 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
     if (!crew) return { success: true, data: [] };
     const request = mockState.requests.find((r) => r.request_id === crew.request_id);
     if (!request) return { success: true, data: [] };
-    return { success: true, data: [{ crew_id: crew.crew_id, request_id: request.request_id, site_name: request.site_name, work_date: request.work_date, start_time: request.start_time, location_text: request.location_text, status: crew.status }] };
+    const member = crew.members.find((item) => item.worker_id === worker.worker_id);
+    return { success: true, data: [{
+      crew_id: crew.crew_id, request_id: request.request_id, site_name: request.site_name,
+      work_date: request.work_date, start_time: request.start_time, location_text: request.location_text,
+      status: crew.status, assigned_trade: member?.assigned_trade, offered_wage: member?.offered_wage || 0,
+      acceptance: member?.acceptance, is_replacement: member?.is_replacement || false, eta: member?.eta,
+      required_workers: request.required_workers, notes: request.notes,
+    }] };
   },
 
   // 배차완료(RESERVED) 취소 — 작업 시작 24시간 전까지 (C-8)
@@ -438,6 +446,50 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
   'GET /office/workers': async () => {
     await delay(150);
     return { success: true, data: mockState.workers.filter((w) => w.office_id === 'OFFICE001') };
+  },
+
+  'GET /office/workers/{workerId}': async (_body, workerId?: string) => {
+    await delay(120);
+    const worker = mockState.workers.find((item) => item.worker_id === workerId && item.office_id === 'OFFICE001');
+    if (!worker) return { success: false, error: { code: 'WORKER_NOT_FOUND', message: '소속 근로자를 찾을 수 없습니다.' } };
+    return { success: true, data: worker };
+  },
+
+  'POST /reports/spec-gap': async (body) => {
+    await delay(900);
+    const payload = body as SpecReportRequest;
+    const directCerts: Record<string, string[]> = {
+      건축목공시공: ['건축목공기능사'], 철근콘크리트시공: ['철근기능사', '거푸집기능사', '콘크리트기능사'],
+      조적미장시공: ['조적기능사', '미장기능사'], 타일석공시공: ['타일기능사', '석공기능사'],
+      방수시공: ['방수기능사', '방수산업기사'], 도장시공: ['건축도장기능사'], 비계시공: ['비계기능사'],
+      배관시공: ['배관기능사'], 용접: ['용접기능사'], 건설기계운전: ['굴착기운전기능사'],
+    };
+    const requirements = directCerts[payload.targetTrade] || [];
+    const matches = requirements.filter((name) => payload.certifications.includes(name));
+    const missing = matches.length === 0;
+    const nowValue = now();
+    const group = {
+      groupName: `${payload.targetTrade} 직접 자격`, importance: '핵심', selectionRule: '하나 이상',
+      certificationNames: requirements, matchedCertifications: matches, satisfied: !missing,
+    };
+    const priorityActions = missing ? [{ priority: 1, itemName: group.groupName, itemType: 'CERTIFICATION_GROUP', reason: `${requirements.join(', ')} 중 하나 이상 취득을 검토하세요.` }] : [];
+    const markdown = [
+      `# ${payload.targetTrade} 스펙 보완 보고서`, '', '## 종합 의견',
+      missing ? `핵심 자격그룹이 충족되지 않았습니다. ${requirements.join(', ')} 중 하나 이상을 검토하세요.` : `핵심 자격그룹을 충족했습니다: ${matches.join(', ')}`,
+      '', '## 분석 범위', `지원서 자격증 ${payload.certifications.length}개와 보유 능력 ${payload.abilities.length}개를 기준으로 분석했습니다.`,
+      '', '## 주의사항과 확인 필요 항목', '현재 화면은 mock 모드의 예시 보고서입니다. 운영 모드에서는 Bedrock Knowledge Base와 Q-Net 근거가 연결됩니다.',
+    ].join('\n');
+    return { success: true, data: {
+      report: {
+        reportId: `mock-${Date.now()}`, targetTrade: payload.targetTrade, targetSpecialty: payload.targetSpecialty || null,
+        analysisScope: '지원서 입력 기준',
+        normalizedCertifications: payload.certifications.map((name) => ({ inputName: name, normalizedName: name, matched: requirements.includes(name) })),
+        satisfiedCertificationGroups: missing ? [] : [group], missingCoreCertificationGroups: missing ? [group] : [],
+        recommendedCertificationGroups: [], abilityCoverage: { matched: 0, required: 0, percentage: 0 },
+        matchedAbilities: [], missingAbilities: [], priorityActions, limitations: ['mock 모드 예시 결과입니다.'],
+        humanReviewItems: [], generatedAt: nowValue,
+      }, markdown, persisted: false,
+    } };
   },
 
   'GET /office/requests': async () => {
@@ -1137,6 +1189,8 @@ function applyApplicationFields(payload: WorkerApplicationRequest) {
     region: payload.region,
     desired_daily_wage: payload.desired_daily_wage,
     certifications: payload.certifications,
+    abilities: payload.abilities || [],
+    introduction: payload.introduction || '',
   };
 }
 

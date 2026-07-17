@@ -1,9 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../api/client';
-import type { WorkHistoryEntry, AcceptedJob, AttendanceMap } from '../../api/types';
+import type { WorkHistoryEntry, AcceptedJob } from '../../api/types';
 import { tradeLabel } from '../../lib/trades';
-import AttendanceHeatmap from '../../components/AttendanceHeatmap';
 
 const JOB_STATUS_LABEL: Record<string, string> = {
   RESERVED: '배차 완료', RUNNING: '작업 중', COMPLETED: '완료',
@@ -14,17 +13,14 @@ export default function HistoryPage() {
   const navigate = useNavigate();
   const [history, setHistory] = useState<WorkHistoryEntry[] | null>(null);
   const [accepted, setAccepted] = useState<AcceptedJob[]>([]);
-  const [attendance, setAttendance] = useState<AttendanceMap>({});
 
   const load = useCallback(async () => {
-    const [h, a, at] = await Promise.all([
+    const [h, a] = await Promise.all([
       api.get<WorkHistoryEntry[]>('/worker/history'),
       api.get<AcceptedJob[]>('/worker/accepted-jobs'),
-      api.get<AttendanceMap>('/worker/attendance'),
     ]);
     if (h.success) setHistory(h.data);
     if (a.success) setAccepted(a.data);
-    if (at.success) setAttendance(at.data);
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -35,12 +31,6 @@ export default function HistoryPage() {
         <h2 className="text-xl font-semibold text-gray-800">작업 이력</h2>
         <button onClick={() => navigate('/worker')}
           className="text-sm text-gray-500 hover:text-gray-800">← 돌아가기</button>
-      </div>
-
-      {/* 출근일 히트맵 (잔디) */}
-      <div className="bg-white rounded-lg border border-gray-200 p-4">
-        <h3 className="text-sm font-medium text-gray-500 mb-3">출근 기록</h3>
-        <AttendanceHeatmap attendance={attendance} />
       </div>
 
       {/* 수락한 작업 */}

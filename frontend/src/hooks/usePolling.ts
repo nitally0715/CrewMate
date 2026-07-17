@@ -8,7 +8,7 @@ interface UsePollingOptions<T> {
 
 export function usePolling<T>({ fetchFn, interval = 5000, enabled = true }: UsePollingOptions<T>) {
   const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<string | null>(null);
   const timerRef = useRef<number | null>(null);
   const fetchRef = useRef(fetchFn);
