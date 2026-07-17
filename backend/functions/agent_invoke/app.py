@@ -34,6 +34,7 @@ from shared.crew import assemble_crew_members
 from shared.responses import ApiError, ErrorCode, success
 from shared.routing import Router
 from shared.schemas import (
+    build_notification,
     build_crew,
     crew_view,
     gap_view,
@@ -47,6 +48,59 @@ router = Router()
 FALLBACK_ENABLED = os.environ.get("AGENT_FALLBACK_ENABLED", "false").lower() == "true"
 ASYNC_ENABLED = os.environ.get("CREW_AGENT_ASYNC_ENABLED", "false").lower() == "true"
 _LAMBDA_CLIENT = None
+
+
+def _composition_subject(entity_type: str, entity_id: str) -> tuple[str, bool]:
+    """Return a user-facing site label and whether this is emergency recomposition."""
+    if entity_type == "GAP":
+        gap = db.get_gap_event(entity_id)
+        request = db.get_request(gap.get("request_id")) if gap else None
+        return str((request or {}).get("site_name") or "해당 작업"), True
+    request = db.get_request(entity_id)
+    return str((request or {}).get("site_name") or "해당 작업"), False
+
+
+def _notify_composition_result(event: dict[str, Any], *, succeeded: bool) -> None:
+    """Best-effort async result notification with an idempotent notification key."""
+    user_id = str(event.get("_notificationUserId") or "")
+    if not user_id:
+        return
+    entity_type = str(event.get("_entityType") or "REQUEST")
+    entity_id = str(event.get("_entityId") or "")
+    outcome = "COMPLETED" if succeeded else "FAILED"
+    try:
+        site_name, emergency = _composition_subject(entity_type, entity_id)
+        if emergency:
+            title = "긴급 재편성 완료" if succeeded else "긴급 재편성 실패"
+            message = (
+                f'"{site_name}" 작업의 대체 인력 추천이 준비되었습니다. 긴급 편성 화면에서 확인해주세요.'
+                if succeeded
+                else f'"{site_name}" 작업의 대체 인력 추천을 만들지 못했습니다. 편성 조건을 확인해주세요.'
+            )
+            notification_type = f"AI_RECOMPOSITION_{outcome}"
+        else:
+            title = "AI 편성 완료" if succeeded else "AI 편성 실패"
+            message = (
+                f'"{site_name}" 작업의 추천 조합이 준비되었습니다. 요청 상세에서 확인해주세요.'
+                if succeeded
+                else f'"{site_name}" 작업의 추천 조합을 만들지 못했습니다. 요청 상세에서 편성 조건을 확인해주세요.'
+            )
+            notification_type = f"AI_COMPOSITION_{outcome}"
+        db.put_notification(build_notification(
+            user_id=user_id,
+            type=notification_type,
+            title=title,
+            message=message,
+            notification_id=f"NOTI_CREW_{entity_type}_{entity_id}_{outcome}",
+            created_at=str(event.get("_notificationCreatedAt") or now_iso()),
+        ))
+    except Exception:  # noqa: BLE001 - notification failure must not change composition result
+        logger.exception(
+            "crew_agent_notification_failed entity_type=%s entity_id=%s outcome=%s",
+            entity_type,
+            entity_id,
+            outcome,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -856,6 +910,8 @@ def _start_async(event: dict[str, Any], context: Any) -> dict[str, Any]:
     async_event["_previousStatus"] = previous_status
     async_event["_entityType"] = entity_type
     async_event["_entityId"] = entity_id
+    async_event["_notificationUserId"] = principal.user_id
+    async_event["_notificationCreatedAt"] = now_iso()
     try:
         _invoke_self(async_event, context)
     except Exception:
@@ -870,7 +926,8 @@ def _start_async(event: dict[str, Any], context: Any) -> dict[str, Any]:
 def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
     if event.get("_crewAgentAction") == "RUN":
         response = router.dispatch(event)
-        if int(response.get("statusCode", 500)) >= 400:
+        succeeded = int(response.get("statusCode", 500)) < 400
+        if not succeeded:
             if event.get("_entityType") == "REQUEST":
                 try:
                     payload = json.loads(response.get("body") or "{}")
@@ -884,6 +941,7 @@ def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
                 )
             elif event.get("_entityType") == "GAP":
                 _set_gap_status(event["_entityId"], GapStatus.FAILED)
+        _notify_composition_result(event, succeeded=succeeded)
         return response
     if ASYNC_ENABLED:
         try:

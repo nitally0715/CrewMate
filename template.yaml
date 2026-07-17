@@ -739,6 +739,10 @@ Resources:
         - DynamoDBReadPolicy: { TableName: !Ref WorkersTable }
         - DynamoDBReadPolicy: { TableName: !Ref AssignmentsTable }
         - Statement:
+            - Sid: WriteCompositionNotifications
+              Effect: Allow
+              Action: [dynamodb:PutItem]
+              Resource: !GetAtt NotificationsTable.Arn
             - Effect: Allow
               Action:
                 - bedrock:InvokeModel
@@ -804,6 +808,10 @@ Resources:
               Resource:
                 - !GetAtt SpecReportJobs.Arn
                 - !Sub "${SpecReportJobs.Arn}/index/OwnerCreatedAtIndex"
+            - Sid: WriteReportNotifications
+              Effect: Allow
+              Action: [dynamodb:PutItem]
+              Resource: !GetAtt NotificationsTable.Arn
             - Sid: ReadAuthoritativeRules
               Effect: Allow
               Action: [s3:GetObject]

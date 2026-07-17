@@ -340,9 +340,18 @@ def test_agent_compose_produces_recommendations(tables):
     for i in range(3):
         _seed_worker(tables, f"w{i}", wage=150000 + i * 1000)
     _seed_request(tables, "REQ1", count=2, budget=400000)
-    resp = _call("functions.agent_invoke.app", make_event(
+    event = make_event(
         "POST", "/office/requests/REQ1/agent-compose", role="OFFICE", office_id=OFFICE,
-        path_params={"requestId": "REQ1"}))
+        sub="office-user", path_params={"requestId": "REQ1"})
+    event.update({
+        "_crewAgentAction": "RUN",
+        "_entityType": "REQUEST",
+        "_entityId": "REQ1",
+        "_previousStatus": "REQUESTED",
+        "_notificationUserId": "office-user",
+        "_notificationCreatedAt": "2026-07-17T10:00:00+00:00",
+    })
+    resp = _call("functions.agent_invoke.app", event)
     data = body_of(resp)["data"]
     assert data["status"] == "PROPOSED"
     assert data["source"] == "AGENT"
@@ -352,6 +361,13 @@ def test_agent_compose_produces_recommendations(tables):
     assert all(m["assigned_trade"] == "GENERAL" for m in rec["members"])
     assert rec["total_cost"] == sum(m["offered_wage"] for m in rec["members"])
     assert tables.get_request("REQ1")["status"] == "PROPOSED"
+    notifications = tables.query_notifications("office-user")
+    assert len(notifications) == 1
+    assert notifications[0]["type"] == "AI_COMPOSITION_COMPLETED"
+    assert notifications[0]["title"] == "AI 편성 완료"
+    assert notifications[0]["sk"] == (
+        "2026-07-17T10:00:00+00:00#NOTI_CREW_REQUEST_REQ1_COMPLETED"
+    )
 
 
 def test_general_slot_accepts_worker_without_general_preference(tables):
@@ -404,6 +420,8 @@ def test_async_agent_failure_persists_user_readable_reason(tables):
         "_entityType": "REQUEST",
         "_entityId": "REQ-NO-MATCH",
         "_previousStatus": "REQUESTED",
+        "_notificationUserId": "office-user",
+        "_notificationCreatedAt": "2026-07-17T10:05:00+00:00",
     })
 
     response = _call("functions.agent_invoke.app", event)
@@ -412,6 +430,9 @@ def test_async_agent_failure_persists_user_readable_reason(tables):
     request = tables.get_request("REQ-NO-MATCH")
     assert request["status"] == "REQUESTED"
     assert "철근공 1명 부족" in request["composition_error"]
+    notifications = tables.query_notifications("office-user")
+    assert notifications[0]["type"] == "AI_COMPOSITION_FAILED"
+    assert "REQ-NO-MATCH" not in notifications[0]["message"]
 
 
 def test_agent_compose_can_start_asynchronously_without_forwarding_token(tables, monkeypatch):
@@ -432,5 +453,7 @@ def test_agent_compose_can_start_asynchronously_without_forwarding_token(tables,
     assert response["statusCode"] == 202
     assert tables.get_request("REQ1")["status"] == "COMPOSING"
     assert invoked[0]["_crewAgentAction"] == "RUN"
+    assert invoked[0]["_notificationUserId"] == "user-1"
+    assert invoked[0]["_notificationCreatedAt"]
     assert "Authorization" not in invoked[0]["headers"]
     assert invoked[0]["headers"]["X-Test"] == "kept"

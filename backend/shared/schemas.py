@@ -499,9 +499,10 @@ def build_notification(
     title: str,
     message: str,
     notification_id: str | None = None,
+    created_at: str | None = None,
 ) -> dict[str, Any]:
     nid = notification_id or new_id("NOTI_")
-    ts = now_iso()
+    ts = created_at or now_iso()
     return {
         "user_id": user_id,
         "sk": notification_sk(ts, nid),

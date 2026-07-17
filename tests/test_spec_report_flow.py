@@ -153,6 +153,39 @@ def test_spec_report_job_start_is_owned_and_invoked_asynchronously(monkeypatch):
     assert storage.started[1]["owner_user_id"] == "worker-sub"
     assert invoked[0]["reportId"] == body["reportId"]
     assert invoked[0]["applicant"]["persistReport"] is True
+    assert invoked[0]["_notificationUserId"] == "worker-sub"
+    assert invoked[0]["_notificationCreatedAt"]
+
+
+def test_async_spec_report_completion_notifies_the_owner(monkeypatch):
+    notifications = []
+
+    class Storage:
+        def fail_job(self, *_args):
+            raise AssertionError("completed job must not fail")
+
+    class Service:
+        def generate(self, applicant, *, report_id):
+            assert applicant.target_trade == "방수시공"
+            assert report_id == "job-notify"
+
+    monkeypatch.setattr(lambda_app, "_storage", lambda: Storage())
+    monkeypatch.setattr(lambda_app, "_service", lambda: Service())
+    monkeypatch.setattr(lambda_app.db, "put_notification", notifications.append)
+
+    result = lambda_app._run_async_job({
+        "reportId": "job-notify",
+        "applicant": _applicant(False).model_dump(mode="json", by_alias=True),
+        "_notificationUserId": "worker-owner",
+        "_notificationCreatedAt": "2026-07-17T10:00:00+00:00",
+    })
+
+    assert result == {"status": "COMPLETED", "reportId": "job-notify"}
+    assert notifications[0]["user_id"] == "worker-owner"
+    assert notifications[0]["type"] == "SPEC_REPORT_COMPLETED"
+    assert notifications[0]["sk"] == (
+        "2026-07-17T10:00:00+00:00#NOTI_REPORT_job-notify_COMPLETED"
+    )
 
 
 def test_spec_report_job_can_only_be_read_by_owner(monkeypatch):

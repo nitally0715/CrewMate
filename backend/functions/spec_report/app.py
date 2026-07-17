@@ -13,8 +13,10 @@ from pydantic import ValidationError
 
 from ncs_collector.models import ApplicantSpecInput
 from ncs_collector.trade_requirements import TradeNotFoundError
+from shared import db
 from shared.auth import get_principal
 from shared.responses import ApiError
+from shared.schemas import build_notification, now_iso
 from shared.state import Role
 from spec_report.aws_rules import S3RuleRepository
 from spec_report.orchestrator import SpecReportService
@@ -28,6 +30,35 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 _SERVICE: SpecReportService | None = None
 _LAMBDA_CLIENT = None
+
+
+def _notify_report_result(
+    *,
+    user_id: str,
+    report_id: str,
+    target_trade: str,
+    created_at: str,
+    succeeded: bool,
+) -> None:
+    """Best-effort completion notification; report generation must not depend on it."""
+    outcome = "COMPLETED" if succeeded else "FAILED"
+    title = "스펙 보고서 생성 완료" if succeeded else "스펙 보고서 생성 실패"
+    message = (
+        f"{target_trade} 스펙 보고서가 준비되었습니다. 보고서 목록에서 확인해주세요."
+        if succeeded
+        else f"{target_trade} 스펙 보고서를 만들지 못했습니다. 잠시 후 다시 시도해주세요."
+    )
+    try:
+        db.put_notification(build_notification(
+            user_id=user_id,
+            type=f"SPEC_REPORT_{outcome}",
+            title=title,
+            message=message,
+            notification_id=f"NOTI_REPORT_{report_id}_{outcome}",
+            created_at=created_at,
+        ))
+    except Exception:  # noqa: BLE001 - notification failure must not fail the report job
+        logger.exception("spec_report_notification_failed report_id=%s outcome=%s", report_id, outcome)
 
 
 def _response(status: int, payload: dict[str, Any]) -> dict[str, Any]:
@@ -116,6 +147,7 @@ def _start_job(event: dict[str, Any], context: Any) -> dict[str, Any]:
     principal = _require_worker(event)
     applicant = _parse_applicant(event).model_copy(update={"persist_report": True})
     report_id = str(uuid.uuid4())
+    notification_created_at = now_iso()
     storage = _storage()
     storage.start_job(
         report_id,
@@ -127,9 +159,18 @@ def _start_job(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "_specReportAction": "GENERATE",
             "reportId": report_id,
             "applicant": applicant.model_dump(mode="json", by_alias=True),
+            "_notificationUserId": principal.user_id,
+            "_notificationCreatedAt": notification_created_at,
         }, context)
     except Exception:
         storage.fail_job(report_id, "ASYNC_INVOKE_FAILED")
+        _notify_report_result(
+            user_id=principal.user_id,
+            report_id=report_id,
+            target_trade=applicant.target_trade,
+            created_at=notification_created_at,
+            succeeded=False,
+        )
         raise
     return _response(202, {"reportId": report_id, "status": "PROCESSING"})
 
@@ -176,14 +217,34 @@ def _list_jobs(event: dict[str, Any]) -> dict[str, Any]:
 def _run_async_job(event: dict[str, Any]) -> dict[str, Any]:
     report_id = str(event.get("reportId") or "")
     storage = _storage()
+    user_id = str(event.get("_notificationUserId") or "")
+    notification_created_at = str(event.get("_notificationCreatedAt") or now_iso())
+    target_trade = "요청한 직종"
     try:
         applicant = ApplicantSpecInput.model_validate(event.get("applicant") or {}).model_copy(
             update={"persist_report": True}
         )
+        target_trade = applicant.target_trade
         _service().generate(applicant, report_id=report_id)
+        if user_id:
+            _notify_report_result(
+                user_id=user_id,
+                report_id=report_id,
+                target_trade=target_trade,
+                created_at=notification_created_at,
+                succeeded=True,
+            )
         return {"status": "COMPLETED", "reportId": report_id}
     except Exception as exc:
         storage.fail_job(report_id)
+        if user_id:
+            _notify_report_result(
+                user_id=user_id,
+                report_id=report_id,
+                target_trade=target_trade,
+                created_at=notification_created_at,
+                succeeded=False,
+            )
         logger.exception(
             "spec_report_async_failed report_id=%s exception=%s",
             report_id,

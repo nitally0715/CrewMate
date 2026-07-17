@@ -502,6 +502,8 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
 
   'POST /reports/spec-gap/jobs': async (body) => {
     const reportId = `mock-${Date.now()}`;
+    const ownerUserId = getCurrentUserId();
+    const targetTrade = (body as SpecReportRequest).targetTrade;
     mockReportJobs.set(reportId, { reportId, status: 'PROCESSING' });
     void handlers['POST /reports/spec-gap'](body).then((response) => {
       if (response.success) {
@@ -513,8 +515,14 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
           markdown: completed.markdown,
           persisted: true,
         });
+        if (ownerUserId) {
+          pushNotification(ownerUserId, 'SPEC_REPORT_COMPLETED', '스펙 보고서 생성 완료', `${targetTrade} 스펙 보고서가 준비되었습니다. 보고서 목록에서 확인해주세요.`);
+        }
       } else {
         mockReportJobs.set(reportId, { reportId, status: 'FAILED', error: response.error });
+        if (ownerUserId) {
+          pushNotification(ownerUserId, 'SPEC_REPORT_FAILED', '스펙 보고서 생성 실패', `${targetTrade} 스펙 보고서를 만들지 못했습니다. 잠시 후 다시 시도해주세요.`);
+        }
       }
     });
     return { success: true, data: { reportId, status: 'PROCESSING' } };
@@ -803,6 +811,7 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
 
   // AI 자동 편성 (mock: READY 후보에서 자동으로 3안 생성)
   'POST /office/requests/{requestId}/agent-compose': async (_body, requestId?: string) => {
+    const requesterUserId = getCurrentUserId() || 'USER_OFFICE_001';
     await delay(1500); // AI 호출 시뮬레이션
     const request = mockState.requests.find((r) => r.request_id === requestId);
     if (!request) return { success: false, error: { code: 'REQUEST_NOT_FOUND', message: '요청을 찾을 수 없습니다.' } };
@@ -892,6 +901,8 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
     const reqIdx = mockState.requests.findIndex((r) => r.request_id === requestId);
     if (reqIdx >= 0) mockState.requests[reqIdx] = { ...mockState.requests[reqIdx], status: 'PROPOSED', updated_at: now() };
 
+    pushNotification(requesterUserId, 'AI_COMPOSITION_COMPLETED', 'AI 편성 완료', `"${request.site_name}" 작업의 추천 조합이 준비되었습니다. 요청 상세에서 확인해주세요.`);
+
     return { success: true, data: newCrew };
   },
 
@@ -956,6 +967,7 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
 
   // AI 긴급 재편성 (EMERGENCY): 잔여 팀원 고정, 빈 자리에 대체 인력 추천
   'POST /office/gap-events/{eventId}/agent-recompose': async (_body, eventId?: string) => {
+    const requesterUserId = getCurrentUserId() || 'USER_OFFICE_001';
     const evIdx = mockState.gapEvents.findIndex((g) => g.event_id === eventId);
     if (evIdx < 0) return { success: false, error: { code: 'GAP_EVENT_NOT_FOUND', message: '결원 이벤트를 찾을 수 없습니다.' } };
     const ev = mockState.gapEvents[evIdx];
@@ -1040,6 +1052,7 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
 
     // PROPOSED 전이 + 추천 저장
     mockState.gapEvents[evIdx] = { ...mockState.gapEvents[evIdx], status: 'PROPOSED', recommendations, updated_at: now() };
+    pushNotification(requesterUserId, 'AI_RECOMPOSITION_COMPLETED', '긴급 재편성 완료', `"${request.site_name}" 작업의 대체 인력 추천이 준비되었습니다. 긴급 편성 화면에서 확인해주세요.`);
     return { success: true, data: mockState.gapEvents[evIdx] };
   },
 
