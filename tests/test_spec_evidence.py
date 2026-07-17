@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from ncs_collector.models import QualificationEvidence
+from ncs_collector.models import (
+    Evidence,
+    EvidenceType,
+    QualificationEvidence,
+    RequirementEvidenceResult,
+)
 from spec_report.qnet import (
     DynamoQualificationCache,
     QNetHttpAdapter,
@@ -17,7 +22,10 @@ from spec_report.report_agent import (
     REPORT_TOOL_NAMES,
     PlanBoundQNetService,
     PlanBoundRetriever,
+    _compact_kb_result,
+    _compact_qnet_result,
     _extract_json_payload,
+    build_agent,
 )
 from spec_report.retrieval import BedrockKnowledgeBaseRetriever, LocalKeywordRetriever
 
@@ -187,6 +195,50 @@ def test_25_injection_text_is_preserved_as_data_not_executed():
 
 def test_26_report_agent_registry_has_exactly_two_tools():
     assert REPORT_TOOL_NAMES == ("retrieve_requirement_evidence", "fetch_qnet_qualification")
+
+
+def test_27_report_agent_tools_require_one_requests_batch():
+    agent = build_agent(
+        LocalKeywordRetriever(ROOT / "Archive" / "RAG_검색문서.jsonl"),
+        QNetQualificationService(FakeWeb()),
+    )
+    configs = agent.tool_registry.get_all_tools_config()
+    assert set(configs) == set(REPORT_TOOL_NAMES)
+    for config in configs.values():
+        schema = config["inputSchema"]["json"]
+        assert schema["required"] == ["requests"]
+        assert schema["properties"]["requests"]["type"] == "array"
+
+
+def test_28_agent_context_uses_compact_evidence_without_losing_provenance():
+    kb = RequirementEvidenceResult(status="SUCCESS", evidence=[
+        Evidence(
+            text="긴 근거 " * 200,
+            score=0.9,
+            metadata={"document_id": f"doc-{index}", "ncs_code": "NCS-1", "unused": "drop"},
+            document_id=f"doc-{index}",
+            source_location=f"s3://bucket/doc-{index}",
+            evidence_type=EvidenceType.BEDROCK_KB,
+        )
+        for index in range(3)
+    ])
+    compact_kb = _compact_kb_result(kb)
+    assert len(compact_kb["evidence"]) == 2
+    assert len(compact_kb["evidence"][0]["excerpt"]) == 240
+    assert compact_kb["evidence"][0]["documentId"] == "doc-0"
+    assert "unused" not in compact_kb["evidence"][0]["metadata"]
+
+    qnet = QualificationEvidence(
+        normalized_name="방수기능사",
+        official_name="방수기능사",
+        duties="상세 수행직무 본문",
+        source_url=QNET_URL,
+        checked_at="2026-01-01T00:00:00+00:00",
+        fetch_status="SUCCESS",
+    )
+    compact_qnet = _compact_qnet_result(qnet)
+    assert compact_qnet["confirmedFields"] == ["duties"]
+    assert "상세 수행직무 본문" not in compact_qnet.values()
 
 
 class FakeHeaders:

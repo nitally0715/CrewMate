@@ -64,7 +64,7 @@ Parameters:
     Default: "0.1"
   ReportAgentTimeoutSeconds:
     Type: String
-    Default: "30"
+    Default: "60"
   KnowledgeBaseId:
     Type: String
     Default: ""

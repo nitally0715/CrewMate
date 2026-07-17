@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import os
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from html.parser import HTMLParser
@@ -57,11 +58,15 @@ class DynamoQualificationCache:
 
             table = boto3.resource("dynamodb").Table(self.table_name)
         self.table = table
+        self._lock = threading.Lock()
 
     def get(self, normalized_name: str) -> QualificationEvidence | None:
         if self.table is None:
             return None
-        item = self.table.get_item(Key={"normalized_name": normalized_name}, ConsistentRead=False).get("Item")
+        with self._lock:
+            item = self.table.get_item(
+                Key={"normalized_name": normalized_name}, ConsistentRead=False
+            ).get("Item")
         if (
             not item
             or int(item.get("expires_at", 0)) <= int(time.time())
@@ -80,7 +85,10 @@ class DynamoQualificationCache:
         item["expires_at"] = int(expires_at)
         item["schema_version"] = _CACHE_SCHEMA_VERSION
         # The cache contract contains qualification evidence only, never applicant data.
-        self.table.put_item(Item={key: value for key, value in item.items() if value is not None})
+        with self._lock:
+            self.table.put_item(
+                Item={key: value for key, value in item.items() if value is not None}
+            )
 
 
 class _TextParser(HTMLParser):
@@ -163,17 +171,19 @@ class QNetHttpAdapter:
         self.min_interval = max(0.0, min_interval)
         self.opener = opener or build_opener(_ValidatingRedirectHandler())
         self._last_call = 0.0
+        self._schedule_lock = threading.Lock()
 
     def _fetch_text(self, url: str) -> tuple[str, str]:
         validated_url = validate_qnet_url(url)
         request = Request(validated_url, headers={"User-Agent": "CrewMateQualificationVerifier/1.0"})
         last_error: Exception | None = None
         for attempt in range(self.retries + 1):
-            wait = self.min_interval - (time.monotonic() - self._last_call)
-            if wait > 0:
-                time.sleep(wait)
-            try:
+            with self._schedule_lock:
+                wait = self.min_interval - (time.monotonic() - self._last_call)
+                if wait > 0:
+                    time.sleep(wait)
                 self._last_call = time.monotonic()
+            try:
                 with self.opener.open(request, timeout=self.timeout) as response:
                     final_url = validate_qnet_url(response.geturl())
                     payload = response.read(2_000_000)

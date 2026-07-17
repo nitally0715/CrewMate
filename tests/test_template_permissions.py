@@ -38,3 +38,8 @@ def test_agent_lambdas_have_async_self_invoke_permissions() -> None:
     assert "lambda:InvokeFunction" in crew
     assert "lambda:InvokeFunction" in report
     assert "s3:GetObject" in report and "s3:PutObject" in report
+
+
+def test_report_agent_has_bounded_background_timeout() -> None:
+    template = (Path(__file__).parents[1] / "template.yaml").read_text(encoding="utf-8")
+    assert 'ReportAgentTimeoutSeconds:\n    Type: String\n    Default: "60"' in template
