@@ -41,12 +41,12 @@ export default function AttendanceHeatmap({ attendance }: { attendance: Attendan
                 key={cell.key}
                 aria-hidden={cell.future}
                 aria-label={cell.future ? undefined : `${cell.key} ${cell.count ? '근무함' : '근무하지 않음'}`}
-                tabIndex={cell.count ? 0 : undefined}
-                className={`relative group w-full aspect-square rounded-sm ${cell.future ? 'bg-transparent' : cell.count ? 'bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-400' : 'bg-gray-100'}`}
+                tabIndex={cell.future ? undefined : 0}
+                className={`relative group w-full aspect-square rounded-sm ${cell.future ? 'bg-transparent' : cell.count ? 'bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-400' : 'bg-gray-100 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300'}`}
               >
-                {cell.count > 0 && (
+                {!cell.future && (
                   <span className="pointer-events-none absolute z-20 hidden group-hover:block group-focus:block bottom-full left-1/2 -translate-x-1/2 mb-1 whitespace-nowrap rounded bg-gray-900 px-2 py-1 text-[10px] text-white shadow-lg">
-                    {cell.key} · 근무함
+                    {cell.key} · {cell.count ? '근무함' : '근무하지 않음'}
                   </span>
                 )}
               </div>
