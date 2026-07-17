@@ -609,6 +609,8 @@ Resources:
         - DynamoDBCrudPolicy: { TableName: !Ref AssignmentsTable }
         - DynamoDBCrudPolicy: { TableName: !Ref GapEventsTable }
         - DynamoDBCrudPolicy: { TableName: !Ref NotificationsTable }
+        - DynamoDBReadPolicy: { TableName: !Ref CompaniesTable }
+        - DynamoDBReadPolicy: { TableName: !Ref OfficesTable }
       Events:
         ListWorkers:
           Type: Api
