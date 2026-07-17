@@ -5,6 +5,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 from ncs_collector.models import (
+    AgentReportDraft,
     Citation,
     Confidence,
     EvidenceType,
@@ -14,6 +15,7 @@ from ncs_collector.models import (
     SpecGapReport,
     StructuredGapAnalysis,
 )
+from ncs_collector.text import comparison_key
 
 
 def build_fallback_report(
@@ -32,7 +34,11 @@ def build_fallback_report(
 
     for item_name, result in kb_results.items():
         ids = [item.document_id for item in result.evidence if item.document_id]
-        ncs_codes = [str(item.metadata.get("ncs_code")) for item in result.evidence if item.metadata.get("ncs_code")]
+        ncs_codes = [
+            str(code)
+            for item in result.evidence
+            if (code := item.metadata.get("ncs_code") or item.metadata.get("NCS코드"))
+        ]
         evidence_types = list(dict.fromkeys(item.evidence_type for item in result.evidence))
         if result.status != "SUCCESS" or not result.evidence:
             reason = result.error or "검색 근거를 확인하지 못했다."
@@ -72,6 +78,21 @@ def build_fallback_report(
         elif item.fetch_status != "SUCCESS":
             limitations.append(f"{item.normalized_name}: Q-Net 확인 실패({item.fetch_status})")
             review.append(f"{item.normalized_name}: Q-Net 공식 정보 확인 필요")
+        else:
+            missing_fields = [
+                label for label, value in (
+                    ("시행상태", item.status),
+                    ("시행기관", item.issuing_organization),
+                    ("수행직무", item.duties),
+                    ("응시자격", item.eligibility),
+                )
+                if not value
+            ]
+            if missing_fields:
+                limitations.append(
+                    f"{item.normalized_name}: Q-Net 상세정보 일부 미확인({', '.join(missing_fields)})"
+                )
+                review.append(f"{item.normalized_name}: Q-Net 상세정보 보완 확인 필요")
         if item.source_url:
             citations.append(
                 Citation(
@@ -102,6 +123,45 @@ def build_fallback_report(
         limitations=list(dict.fromkeys(limitations + list(extra_limitations or []))),
         human_review_items=list(dict.fromkeys(review)),
     )
+
+
+def materialize_agent_report(
+    structured: StructuredGapAnalysis,
+    draft: AgentReportDraft,
+    kb_results: dict[str, RequirementEvidenceResult],
+    qnet_results: dict[str, QualificationEvidence],
+) -> SpecGapReport:
+    """Combine a short Agent narrative with Lambda-owned facts and citations."""
+    report = build_fallback_report(structured, kb_results, qnet_results)
+    expected = {comparison_key(name): result for name, result in kb_results.items()}
+    report.knowledge_base_evidence = [
+        ItemEvidence(
+            item_name=item.item_name,
+            item_type=item.item_type,
+            importance=item.importance,
+            decision="AUTHORITATIVE_RESULT_UNCHANGED",
+            reason=item.reason,
+            local_document_ids=item.local_document_ids,
+            ncs_codes=item.ncs_codes,
+            evidence_types=list(dict.fromkeys(
+                evidence.evidence_type
+                for evidence in expected.get(
+                    comparison_key(item.item_name),
+                    RequirementEvidenceResult(status="NOT_RETRIEVED"),
+                ).evidence
+            )),
+            confidence=item.confidence,
+            conflicts=item.conflicts,
+            limitations=item.limitations,
+        )
+        for item in draft.knowledge_base_evidence
+    ]
+    report.conflicts = list(dict.fromkeys(report.conflicts + draft.conflicts))
+    report.limitations = list(dict.fromkeys(report.limitations + draft.limitations))
+    report.human_review_items = list(
+        dict.fromkeys(report.human_review_items + draft.human_review_items)
+    )
+    return report
 
 
 def render_markdown(report: SpecGapReport) -> str:

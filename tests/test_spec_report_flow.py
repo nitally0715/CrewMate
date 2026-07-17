@@ -8,17 +8,23 @@ import pytest
 from functions.spec_report import app as lambda_app
 from ncs_collector.gap_analyzer import analyze_gap
 from ncs_collector.models import (
+    AgentItemEvidenceDraft,
+    AgentReportDraft,
     ApplicantSpecInput,
     Citation,
+    Evidence,
+    EvidenceType,
+    Confidence,
     QualificationEvidence,
     RequirementEvidenceResult,
     SpecGapReport,
 )
 from ncs_collector.rag_ready import build_rag_ready
 from ncs_collector.trade_requirements import LocalRuleRepository
-from spec_report.orchestrator import SpecReportService
+from spec_report.orchestrator import SpecReportService, build_evidence_plan
 from spec_report.qnet import QNetQualificationService
-from spec_report.rendering import build_fallback_report
+from spec_report.rendering import build_fallback_report, materialize_agent_report
+from spec_report.report_agent import ReportAgentRunner
 from spec_report.retrieval import LocalKeywordRetriever
 from spec_report.validator import ReportValidationError, validate_report
 
@@ -122,7 +128,7 @@ def test_32_cache_record_has_no_applicant_personal_data():
         normalized_name="방수기능사", official_name="방수기능사", source_url="https://www.q-net.or.kr/x",
         checked_at="2026-01-01", fetch_status="SUCCESS"
     ), 9999999999)
-    assert set(table.item) <= set(QualificationEvidence.model_fields) | {"expires_at"}
+    assert set(table.item) <= set(QualificationEvidence.model_fields) | {"expires_at", "schema_version"}
     assert not {"name", "phone", "experience", "abilities"} & set(table.item)
 
 
@@ -138,6 +144,7 @@ def test_rag_conversion_writes_record_metadata(tmp_path):
     metadata_path = csv_path.with_name(csv_path.name + ".metadata.json")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert csv_path.exists()
+    assert metadata_path.stat().st_size <= 1024
     assert metadata["documentStructureConfiguration"]["type"] == "RECORD_BASED_STRUCTURE_METADATA"
     assert metadata["documentStructureConfiguration"]["recordBasedStructureMetadata"]["contentFields"] == [{"fieldName": "search_text"}]
 
@@ -148,3 +155,86 @@ def test_fallback_kb_citation_has_document_or_location():
     report = build_fallback_report(structured, {"도막 방수": result}, {})
     validate_report(report, structured)
     assert all(c.document_id or c.source_url for c in report.citations if c.source_type == "LOCAL_KEYWORD")
+
+
+def test_validator_rejects_unreturned_kb_document_id():
+    structured = analyze_gap(_applicant(), REPO)
+    plan = build_evidence_plan(structured, REPO, include_qnet=False)
+    item_name = next(item["itemName"] for item in plan if item["action"] == "KB")
+    retrieved = RequirementEvidenceResult(
+        status="SUCCESS",
+        evidence=[Evidence(
+            text="구조화 요건 근거",
+            document_id="returned-doc",
+            source_location="s3://knowledge/returned-doc.csv",
+            evidence_type=EvidenceType.BEDROCK_KB,
+        )],
+    )
+    report = build_fallback_report(structured, {item_name: retrieved}, {})
+    report.knowledge_base_evidence[0].local_document_ids = ["invented-doc"]
+    with pytest.raises(ReportValidationError, match="unreturned document id"):
+        validate_report(report, structured, {item_name: retrieved}, {}, plan)
+
+
+def test_agent_draft_cannot_own_structured_qnet_or_citations():
+    structured = analyze_gap(_applicant(), REPO)
+    item_name = structured.missing_abilities[0].ability_name
+    retrieved = RequirementEvidenceResult(
+        status="SUCCESS",
+        evidence=[Evidence(
+            text="NCS 근거",
+            document_id="ability-doc",
+            source_location="s3://knowledge/ability.csv",
+            metadata={"ncs_code": structured.missing_abilities[0].ncs_code},
+            evidence_type=EvidenceType.BEDROCK_KB,
+        )],
+    )
+    qnet = QualificationEvidence(
+        normalized_name="방수기능사",
+        official_name="방수기능사",
+        source_url="https://www.q-net.or.kr/official",
+        checked_at="2026-07-16T00:00:00+00:00",
+        fetch_status="SUCCESS",
+    )
+    draft = AgentReportDraft(knowledge_base_evidence=[AgentItemEvidenceDraft(
+        item_name=item_name,
+        item_type="ABILITY",
+        reason="검색 근거를 구조화 판정에 연결했다.",
+        local_document_ids=["ability-doc"],
+        ncs_codes=[structured.missing_abilities[0].ncs_code],
+        confidence=Confidence.REFERENCE,
+    )])
+    report = materialize_agent_report(
+        structured, draft, {item_name: retrieved}, {"방수기능사": qnet}
+    )
+    assert report.missing_abilities == structured.missing_abilities
+    assert report.qnet_evidence == [qnet]
+    assert report.knowledge_base_evidence[0].decision == "AUTHORITATIVE_RESULT_UNCHANGED"
+    assert report.knowledge_base_evidence[0].evidence_types == ["BEDROCK_KB"]
+    assert {citation.source_type for citation in report.citations} == {"BEDROCK_KB", "QNET"}
+
+
+def test_runner_uses_strands_structured_output_model():
+    draft = AgentReportDraft()
+
+    class StructuredAgent:
+        def __init__(self):
+            self.kwargs = None
+
+        def __call__(self, prompt, **kwargs):
+            assert "structuredGapAnalysis" in prompt
+            self.kwargs = kwargs
+            return type("Result", (), {
+                "structured_output": draft,
+                "message": {"content": []},
+            })()
+
+    agent = StructuredAgent()
+    runner = ReportAgentRunner(
+        LocalKeywordRetriever(ROOT / "Archive" / "RAG_검색문서.jsonl"),
+        QNetQualificationService(OfflineWeb()),
+        agent=agent,
+    )
+    result = runner.run(analyze_gap(_applicant(), REPO), [])
+    assert result is draft
+    assert agent.kwargs["structured_output_model"] is AgentReportDraft

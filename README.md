@@ -176,3 +176,17 @@ Office:  /office/workers, /office/requests, /office/requests/{id}/reject,
 ## 12. Out of Scope
 
 GPS 출결, 출근 확률 예측 ML, SageMaker, 자동 급여 정산, 전자 근로계약, SMS/푸시, WebSocket(P1), 다중 사무소 소속(P1), 무응답 자동 타임아웃 Lambda(P1 — P0는 사무소의 수동 제안 취소 버튼).
+
+---
+
+## 13. 지원자 스펙 Gap 보고서와 Knowledge Base
+
+지원자 입력은 Lambda에서 먼저 구조화 규칙으로 정규화·판정한다. Strands Agent에는
+Amazon Bedrock Knowledge Base 검색과 Q-Net 공식 확인 두 읽기 도구만 등록되며,
+Agent는 짧은 `AgentReportDraft` 근거 설명만 작성한다. 판정, Q-Net 원본 필드,
+evidence type과 citation은 Lambda가 실제 도구 반환값에서 주입하고 다시 검증한다. 보고서는 요청의
+`persistReport=true`인 경우에만 별도 SSE-KMS S3 버킷에 저장된다.
+
+서울 리전의 배포는 S3 Vectors 기반 Bedrock Knowledge Base를 사용한다. 전체 자동
+배포와 데이터 ingestion, 실제 Retrieve 검증 방법은
+[`scripts/kb/README.md`](scripts/kb/README.md)를 참고한다.
