@@ -40,19 +40,135 @@ def _user_facing(value: object) -> str:
     return re.sub(r"[ \t]{2,}", " ", text).strip()
 
 
-def _qnet_display_lines(value: str | None, *, limit: int = 10) -> list[str]:
-    """Turn Q-Net paragraph/table text into bounded, readable report bullets."""
+def _qnet_rows(value: str | None) -> list[str]:
+    """Return de-duplicated visible Q-Net rows while preserving table cells."""
     if not value:
         return []
     expanded = re.sub(r"\s+(?=[①-⑳])", "\n", str(value))
     rows: list[str] = []
     for raw in expanded.splitlines():
-        row = _user_facing(re.sub(r"\s*\|\s*", " · ", raw))
+        row = _user_facing(raw).strip(" |").strip()
         if row and row not in rows:
             rows.append(row)
-    if len(rows) > limit:
-        return rows[:limit] + ["나머지 세부 내용은 연결된 Q-Net 공식 페이지에서 확인하세요."]
     return rows
+
+
+def _qnet_display_lines(value: str | None, *, limit: int = 10) -> list[str]:
+    """Turn short Q-Net text into bounded, readable report bullets."""
+    return [re.sub(r"\s*\|\s*", " · ", row) for row in _qnet_rows(value)[:limit]]
+
+
+def _compact_qnet_label(value: str) -> str:
+    text = re.sub(r"^[①-⑳]|^\d+[.)]?\s*", "", value).strip()
+    replacements = {
+        r"시\s*행\s*처": "시행처",
+        r"관련\s*학과": "관련 학과",
+        r"시험\s*과목": "시험 과목",
+        r"검정\s*방법": "검정 방법",
+        r"합격\s*기준": "합격 기준",
+        r"응시\s*자격": "응시자격",
+    }
+    for pattern, replacement in replacements.items():
+        text = re.sub(pattern, replacement, text)
+    return text
+
+
+def _acquisition_display_lines(value: str | None) -> list[str]:
+    """Summarize acquisition text without duplicated titles or auxiliary tables."""
+    output: list[str] = []
+    section: str | None = None
+    for raw in _qnet_rows(value):
+        row = _compact_qnet_label(raw)
+        if not row or re.search(r"취득\s*방법$", row):
+            continue
+        if row.startswith("시행처"):
+            # Issuing organization is already shown in the qualification block.
+            continue
+        if any(marker in row for marker in (
+            "작업형 실기시험 기본정보", "안전등급", "시험장소 구분",
+            "주요시설 및 장비", "보호구",
+        )):
+            break
+        if row.startswith("※") or "고객지원-자료실-공개문제" in row:
+            continue
+
+        related = re.match(r"관련 학과\s*:?[ ]*(.*)", row)
+        if related:
+            if related.group(1):
+                output.append(f"관련 학과: {related.group(1)}")
+            continue
+
+        matched_section = next(
+            (label for label in ("시험 과목", "검정 방법", "합격 기준") if row.startswith(label)),
+            None,
+        )
+        if matched_section:
+            section = matched_section
+            remainder = row[len(matched_section):].lstrip(" :")
+            if remainder:
+                output.append(f"{section}: {remainder}")
+            continue
+
+        part = re.match(r"[-·]?\s*(필기|실기)\s*:\s*(.*)", row)
+        if part and section:
+            output.append(f"{section} · {part.group(1)}: {part.group(2)}")
+            continue
+        if row.startswith("응시자격"):
+            output.append(row.replace("응시자격", "응시자격", 1))
+            continue
+        if section and row.startswith(("-", "·")):
+            output.append(f"{section}: {row.lstrip('-· ')}")
+            continue
+
+    return list(dict.fromkeys(output))[:12]
+
+
+def _schedule_display_lines(value: str | None) -> list[str]:
+    """Map Q-Net schedule table cells to labels and discard accessibility headers."""
+    labels = (
+        "필기 원서접수",
+        "필기시험",
+        "필기 합격발표",
+        "실기 원서접수",
+        "실기시험",
+        "최종 합격발표",
+    )
+    output: list[str] = []
+    schedule_rows = [row for row in _qnet_rows(value) if re.match(r"^\d{4}년\s+", row)]
+    for row in schedule_rows[:2]:
+        cells = [cell.strip() for cell in row.split("|")]
+        output.append(cells[0])
+        for label, cell in zip(labels, cells[1:]):
+            if cell and cell not in {"-", "해당없음", "해당 없음"}:
+                output.append(f"{label}: {cell}")
+    if output:
+        return output
+
+    # Defensive fallback for an unexpected Q-Net layout: show only lines that
+    # contain an actual date, never the table description or column headers.
+    for row in _qnet_rows(value):
+        if re.search(r"\b20\d{2}[.-]\d{2}[.-]\d{2}\b", row):
+            output.append(re.sub(r"\s*\|\s*", " · ", row))
+    return output[:8]
+
+
+def _fee_display_lines(value: str | None) -> list[str]:
+    """Convert Q-Net fee headers and values into explicit written/practical fees."""
+    for row in reversed(_qnet_rows(value)):
+        amounts = re.findall(r"\d[\d,]*\s*원", row)
+        if len(amounts) >= 2:
+            return [f"필기: {amounts[0]}", f"실기: {amounts[1]}"]
+        if len(amounts) == 1:
+            return [f"응시 수수료: {amounts[0]}"]
+    return []
+
+
+def _append_qnet_list(lines: list[str], heading: str, values: list[str]) -> bool:
+    if not values:
+        return False
+    lines.append(f"#### {heading}")
+    lines.extend(f"- {value}" for value in values)
+    return True
 
 
 def _append_qnet_details(
@@ -301,23 +417,18 @@ def render_markdown(report: SpecGapReport) -> str:
                 ("주요 업무", item.duties),
             ),
         )
-        has_details = _append_qnet_details(
-            lines,
-            "응시·취득 안내",
-            (
-                ("응시자격", item.eligibility),
-                ("취득 방법", item.acquisition_method or item.exam_information),
-            ),
+        acquisition_lines = [
+            f"응시자격: {value}"
+            for value in _qnet_display_lines(item.eligibility, limit=4)
+        ] + _acquisition_display_lines(item.acquisition_method or item.exam_information)
+        has_details = _append_qnet_list(
+            lines, "응시·취득 안내", acquisition_lines
         ) or has_details
-        has_details = _append_qnet_details(
-            lines,
-            "시험 일정",
-            (("Q-Net 안내", item.exam_schedule),),
+        has_details = _append_qnet_list(
+            lines, "시험 일정", _schedule_display_lines(item.exam_schedule)
         ) or has_details
-        has_details = _append_qnet_details(
-            lines,
-            "수수료",
-            (("응시 수수료", item.fees),),
+        has_details = _append_qnet_list(
+            lines, "수수료", _fee_display_lines(item.fees)
         ) or has_details
         if not has_details:
             lines.append("- 자격 상세 내용은 연결된 Q-Net 공식 페이지에서 확인해주세요.")

@@ -18,7 +18,7 @@ from ncs_collector.models import QualificationEvidence
 from ncs_collector.text import comparison_key, normalize_text
 
 _ALLOWED_HOSTS = {"q-net.or.kr", "www.q-net.or.kr"}
-_CACHE_SCHEMA_VERSION = 5
+_CACHE_SCHEMA_VERSION = 6
 
 
 def validate_qnet_url(url: str) -> str:
@@ -133,7 +133,7 @@ def _plain_text(value: str) -> str:
 class _LineTextParser(HTMLParser):
     """Preserve visible Q-Net paragraphs and table rows as plain-text lines."""
 
-    _BLOCK_TAGS = {"br", "h1", "h2", "h3", "h4", "h5", "h6", "li", "p", "tr"}
+    _BLOCK_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6", "li", "p", "tr"}
 
     def __init__(self):
         super().__init__()
@@ -152,6 +152,11 @@ class _LineTextParser(HTMLParser):
         normalized_tag = tag.lower()
         if normalized_tag in {"script", "style"}:
             self._ignored_depth += 1
+        elif not self._ignored_depth and normalized_tag == "br":
+            # A line break inside a Q-Net table cell is visual wrapping, not a
+            # new schedule row. Keeping the cell intact lets the renderer map
+            # dates to their proper column labels.
+            self.current.append(" ")
         elif not self._ignored_depth and normalized_tag in self._BLOCK_TAGS:
             self._flush()
 

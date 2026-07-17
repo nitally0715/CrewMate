@@ -385,9 +385,28 @@ def test_markdown_hides_ncs_codes_and_uses_clickable_qnet_link():
             official_name=qualification_name,
             status="시행중",
             issuing_organization="한국산업인력공단",
-            acquisition_method="필기와 실기 시험",
-            exam_schedule="2026년 정기 기능사 3회 | 2026.06.08 ~ 2026.06.11 접수",
-            fees="필기 14,500원 | 실기 50,500원",
+            eligibility="제한 없음",
+            acquisition_method=(
+                f"{qualification_name} 취득방법\n"
+                "① 시 행 처 : 한국산업인력공단\n"
+                "② 관련학과 : 건축 관련 학과\n"
+                "③ 시험과목\n- 필기 : 건축일반\n- 실기 : 방수 작업\n"
+                "④ 검정방법\n- 필기 : 객관식\n- 실기 : 작업형\n"
+                "※ 공개문제는 고객지원-자료실-공개문제에서 확인"
+            ),
+            exam_schedule=(
+                f"{qualification_name} 원서접수시간 안내\n"
+                "구분, 필기원서접수, 필기시험 순으로 시험일정 안내표\n"
+                "구분 | 필기원서접수 | 필기시험 | 필기합격발표 | "
+                "실기원서접수 | 실기시험 | 최종합격발표\n"
+                "2026년 정기 기능사 3회 | 2026.06.08 ~ 2026.06.11 | "
+                "2026.06.20 | 2026.07.01 | 2026.07.05 ~ 2026.07.08 | "
+                "2026.08.01 ~ 2026.08.15 | 2026.09.01"
+            ),
+            fees=(
+                "필기, 실기 항목순으로 수수료 안내표\n"
+                "필기 | 실기\n14,500원 | 50,500원"
+            ),
             source_url=qnet_url,
             checked_at="2026-07-17T00:00:00+09:00",
             fetch_status="SUCCESS",
@@ -404,10 +423,26 @@ def test_markdown_hides_ncs_codes_and_uses_clickable_qnet_link():
     assert "Q-Net 공식 확인 결과" not in markdown
     assert "#### 자격 정보" in markdown
     assert "#### 응시·취득 안내" in markdown
+    assert "응시자격: 제한 없음" in markdown
+    assert "관련 학과: 건축 관련 학과" in markdown
+    assert "시험 과목 · 필기: 건축일반" in markdown
+    assert "시험 과목 · 실기: 방수 작업" in markdown
+    assert "검정 방법 · 필기: 객관식" in markdown
+    assert f"{qualification_name} 취득방법" not in markdown
+    assert "시행처 : 한국산업인력공단" not in markdown
+    assert "공개문제는" not in markdown
     assert "#### 시험 일정" in markdown
-    assert "Q-Net 안내: 2026년 정기 기능사 3회 · 2026.06.08 ~ 2026.06.11 접수" in markdown
+    assert "2026년 정기 기능사 3회" in markdown
+    assert "필기 원서접수: 2026.06.08 ~ 2026.06.11" in markdown
+    assert "필기시험: 2026.06.20" in markdown
+    assert "실기시험: 2026.08.01 ~ 2026.08.15" in markdown
+    assert "원서접수시간 안내" not in markdown
+    assert "시험일정 안내표" not in markdown
     assert "#### 수수료" in markdown
-    assert "응시 수수료: 필기 14,500원 · 실기 50,500원" in markdown
+    assert "필기: 14,500원" in markdown
+    assert "실기: 50,500원" in markdown
+    assert "수수료 안내표" not in markdown
+    assert "나머지 세부 내용" not in markdown
     assert "### Q-Net 공식 자격 정보" in markdown
     assert "2026-07-17 확인" in markdown
     assert f"참고한 자격증: {qualification_name}" in markdown
