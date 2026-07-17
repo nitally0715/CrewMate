@@ -20,14 +20,188 @@ from ncs_collector.text import comparison_key
 
 
 _NCS_CODE = re.compile(r"\s*\(?\b\d{8,12}_\d+(?:v\d+)?\b\)?", re.IGNORECASE)
+_TRADE_NAMES = {
+    "FORMWORK": "형틀목공",
+    "REBAR": "철근공",
+    "MASONRY": "조적공",
+    "MATERIAL_CARRY": "자재운반",
+    "GENERAL": "보통인부",
+    "ANY": "직종 무관",
+}
 
 
 def _user_facing(value: object) -> str:
     """Remove internal NCS identifiers from prose while preserving structured JSON fields."""
     text = _NCS_CODE.sub("", str(value or ""))
+    for code, label in _TRADE_NAMES.items():
+        text = re.sub(rf"\b{re.escape(code)}\b", label, text, flags=re.IGNORECASE)
     text = re.sub(r"\(\s*\)", "", text)
     text = re.sub(r"\s+—\s*$", "", text)
     return re.sub(r"[ \t]{2,}", " ", text).strip()
+
+
+def _qnet_rows(value: str | None) -> list[str]:
+    """Return de-duplicated visible Q-Net rows while preserving table cells."""
+    if not value:
+        return []
+    expanded = re.sub(r"\s+(?=[①-⑳])", "\n", str(value))
+    rows: list[str] = []
+    for raw in expanded.splitlines():
+        row = _user_facing(raw).strip(" |").strip()
+        if row and row not in rows:
+            rows.append(row)
+    return rows
+
+
+def _qnet_display_lines(value: str | None, *, limit: int = 10) -> list[str]:
+    """Turn short Q-Net text into bounded, readable report bullets."""
+    return [re.sub(r"\s*\|\s*", " · ", row) for row in _qnet_rows(value)[:limit]]
+
+
+def _compact_qnet_label(value: str) -> str:
+    text = re.sub(r"^[①-⑳]|^\d+[.)]?\s*", "", value).strip()
+    replacements = {
+        r"시\s*행\s*처": "시행처",
+        r"관련\s*학과": "관련 학과",
+        r"시험\s*과목": "시험 과목",
+        r"검정\s*방법": "검정 방법",
+        r"합격\s*기준": "합격 기준",
+        r"응시\s*자격": "응시자격",
+    }
+    for pattern, replacement in replacements.items():
+        text = re.sub(pattern, replacement, text)
+    return text
+
+
+def _acquisition_display_lines(value: str | None) -> list[str]:
+    """Summarize acquisition text without duplicated titles or auxiliary tables."""
+    output: list[str] = []
+    section: str | None = None
+    for raw in _qnet_rows(value):
+        row = _compact_qnet_label(raw)
+        if not row or re.search(r"취득\s*방법$", row):
+            continue
+        if row.startswith("시행처"):
+            # Issuing organization is already shown in the qualification block.
+            continue
+        if any(marker in row for marker in (
+            "작업형 실기시험 기본정보", "안전등급", "시험장소 구분",
+            "주요시설 및 장비", "보호구",
+        )):
+            break
+        if row.startswith("※") or "고객지원-자료실-공개문제" in row:
+            continue
+
+        related = re.match(r"관련 학과\s*:?[ ]*(.*)", row)
+        if related:
+            if related.group(1):
+                output.append(f"관련 학과: {related.group(1)}")
+            continue
+
+        matched_section = next(
+            (label for label in ("시험 과목", "검정 방법", "합격 기준") if row.startswith(label)),
+            None,
+        )
+        if matched_section:
+            section = matched_section
+            remainder = row[len(matched_section):].lstrip(" :")
+            if remainder:
+                output.append(f"{section}: {remainder}")
+            continue
+
+        part = re.match(r"[-·]?\s*(필기|실기)\s*:\s*(.*)", row)
+        if part and section:
+            output.append(f"{section} · {part.group(1)}: {part.group(2)}")
+            continue
+        if row.startswith("응시자격"):
+            output.append(row.replace("응시자격", "응시자격", 1))
+            continue
+        if section and row.startswith(("-", "·")):
+            output.append(f"{section}: {row.lstrip('-· ')}")
+            continue
+
+    return list(dict.fromkeys(output))[:12]
+
+
+def _schedule_display_lines(value: str | None) -> list[str]:
+    """Map Q-Net schedule table cells to labels and discard accessibility headers."""
+    labels = (
+        "필기 원서접수",
+        "필기시험",
+        "필기 합격발표",
+        "실기 원서접수",
+        "실기시험",
+        "최종 합격발표",
+    )
+    output: list[str] = []
+    schedule_rows = [row for row in _qnet_rows(value) if re.match(r"^\d{4}년\s+", row)]
+    for row in schedule_rows[:2]:
+        cells = [cell.strip() for cell in row.split("|")]
+        output.append(cells[0])
+        for label, cell in zip(labels, cells[1:]):
+            if cell and cell not in {"-", "해당없음", "해당 없음"}:
+                output.append(f"{label}: {cell}")
+    if output:
+        return output
+
+    # Defensive fallback for an unexpected Q-Net layout: show only lines that
+    # contain an actual date, never the table description or column headers.
+    for row in _qnet_rows(value):
+        if re.search(r"\b20\d{2}[.-]\d{2}[.-]\d{2}\b", row):
+            output.append(re.sub(r"\s*\|\s*", " · ", row))
+    return output[:8]
+
+
+def _fee_display_lines(value: str | None) -> list[str]:
+    """Convert Q-Net fee headers and values into explicit written/practical fees."""
+    for row in reversed(_qnet_rows(value)):
+        amounts = re.findall(r"\d[\d,]*\s*원", row)
+        if len(amounts) >= 2:
+            return [f"필기: {amounts[0]}", f"실기: {amounts[1]}"]
+        if len(amounts) == 1:
+            return [f"응시 수수료: {amounts[0]}"]
+    return []
+
+
+def _append_qnet_list(lines: list[str], heading: str, values: list[str]) -> bool:
+    if not values:
+        return False
+    lines.append(f"#### {heading}")
+    lines.extend(f"- {value}" for value in values)
+    return True
+
+
+def _append_qnet_details(
+    lines: list[str],
+    heading: str,
+    details: tuple[tuple[str, str | None], ...],
+) -> bool:
+    prepared = [(label, _qnet_display_lines(value)) for label, value in details]
+    prepared = [(label, values) for label, values in prepared if values]
+    if not prepared:
+        return False
+    lines.append(f"#### {heading}")
+    for label, values in prepared:
+        lines.append(f"- {label}: {values[0]}")
+        lines.extend(f"- {value}" for value in values[1:])
+    return True
+
+
+def _qualification_names(report: SpecGapReport) -> list[str]:
+    """Return only rule-backed missing/recommended qualifications in display order."""
+    names: list[str] = []
+    for group in (
+        report.missing_core_certification_groups
+        + report.recommended_certification_groups
+    ):
+        names.extend(group.certification_names)
+    return list(dict.fromkeys(names))
+
+
+def _safe_qnet_url(value: str | None) -> str | None:
+    if value and re.match(r"^https://(?:www\.)?q-net\.or\.kr(?:/|$)", value, re.IGNORECASE):
+        return value
+    return None
 
 
 def build_fallback_report(
@@ -190,7 +364,7 @@ def render_markdown(report: SpecGapReport) -> str:
         "",
         "## 2. 분석 범위",
         f"- {_user_facing(report.analysis_scope)}",
-        f"- 세부 작업: {report.target_specialty or '미지정'}",
+        f"- 세부 작업: {_user_facing(report.target_specialty or '미지정')}",
         "",
         "## 3. 지원자 보유 스펙",
         f"- 정규화 자격: {', '.join(item.normalized_name or item.input_name for item in report.normalized_certifications) or '없음'}",
@@ -202,20 +376,13 @@ def render_markdown(report: SpecGapReport) -> str:
         "## 5. 부족한 핵심 자격 요건",
         f"- {names(report.missing_core_certification_groups)}",
         "",
-        "## 6. 추천 자격",
-        f"- {names(report.recommended_certification_groups)}",
-        "",
-        "## 7. 보유 능력과 부족 능력",
-        f"- 보유: {names(report.matched_abilities, 'ability_name')}",
-        f"- 부족: {names(report.missing_abilities, 'ability_name')}",
-        "",
-        "## 8. 우선 보완 계획",
+        "## 6. 추천 자격증과 취득 안내",
+        f"- 우선 확인할 핵심 자격그룹: {names(report.missing_core_certification_groups)}",
+        f"- 추가로 고려할 추천 자격그룹: {names(report.recommended_certification_groups)}",
     ]
-    lines.extend(
-        f"{item.priority}. {_user_facing(item.item_name)} — {_user_facing(item.reason)}"
-        for item in report.priority_actions
-    )
-    lines.extend(["", "## 9. Q-Net 공식 확인 결과"])
+    qnet_by_name = {
+        comparison_key(item.normalized_name): item for item in report.qnet_evidence
+    }
     status_labels = {
         "SUCCESS": "공식 정보 확인",
         "NAME_MISMATCH": "자격명 확인 필요",
@@ -223,36 +390,108 @@ def render_markdown(report: SpecGapReport) -> str:
         "FAILED": "확인 실패",
         "NOT_FOUND": "공식 페이지 미확인",
     }
-    for item in report.qnet_evidence:
+    for certification_name in _qualification_names(report):
+        item = qnet_by_name.get(comparison_key(certification_name))
+        if item is None:
+            lines.append("")
+            lines.append(f"### {_user_facing(certification_name)}")
+            lines.append("- Q-Net 상세 정보를 불러오지 못했습니다. 자격명을 직접 확인해주세요.")
+            continue
         status = status_labels.get(item.fetch_status, "확인 필요")
-        source = (
-            f"[Q-Net 공식 페이지]({item.source_url})"
-            if item.source_url else "공식 페이지 확인 필요"
+        safe_url = _safe_qnet_url(item.source_url)
+        title = (
+            f"[{_user_facing(certification_name)}]({safe_url})"
+            if safe_url else _user_facing(certification_name)
         )
-        checked = item.checked_at or "확인 시각 없음"
-        lines.append(f"- {_user_facing(item.normalized_name)}: {status} · {source} · {checked}")
-    if not report.qnet_evidence:
-        lines.append("- 확인 결과 없음")
-    lines.extend(["", "## 10. Bedrock Knowledge Base 근거"])
+        lines.extend(["", f"### {title}"])
+        if item.fetch_status != "SUCCESS":
+            lines.append(f"- {status}. Q-Net에서 최신 정보를 직접 확인해주세요.")
+            continue
+        has_details = _append_qnet_details(
+            lines,
+            "자격 정보",
+            (
+                ("공식 자격명", item.official_name),
+                ("시행 상태", item.status),
+                ("시행기관", item.issuing_organization),
+                ("주요 업무", item.duties),
+            ),
+        )
+        acquisition_lines = [
+            f"응시자격: {value}"
+            for value in _qnet_display_lines(item.eligibility, limit=4)
+        ] + _acquisition_display_lines(item.acquisition_method or item.exam_information)
+        has_details = _append_qnet_list(
+            lines, "응시·취득 안내", acquisition_lines
+        ) or has_details
+        has_details = _append_qnet_list(
+            lines, "시험 일정", _schedule_display_lines(item.exam_schedule)
+        ) or has_details
+        has_details = _append_qnet_list(
+            lines, "수수료", _fee_display_lines(item.fees)
+        ) or has_details
+        if not has_details:
+            lines.append("- 자격 상세 내용은 연결된 Q-Net 공식 페이지에서 확인해주세요.")
+    if not _qualification_names(report):
+        lines.append("- 현재 추가로 추천할 자격증이 없습니다.")
+    lines.extend([
+        "",
+        "## 7. 보유 능력과 부족 능력",
+        f"- 보유: {names(report.matched_abilities, 'ability_name')}",
+        f"- 부족: {names(report.missing_abilities, 'ability_name')}",
+        "",
+        "## 8. 우선 보완 계획",
+    ])
     lines.extend(
-        f"- {_user_facing(item.item_name)}: {_user_facing(item.reason)}"
+        f"{item.priority}. {_user_facing(item.item_name)} — {_user_facing(item.reason)}"
+        for item in report.priority_actions
+    )
+    lines.extend(["", "## 9. 내부 기준에서 확인한 근거"])
+    lines.extend(
+        f"- {_user_facing(item.item_name)}: "
+        f"내부 {'능력' if item.item_type == 'ABILITY' else '자격'} 기준 자료에서 확인했습니다."
         for item in report.knowledge_base_evidence
     )
     if not report.knowledge_base_evidence:
         lines.append("- 검색 결과 없음")
-    lines.extend(["", "## 11. 근거 및 출처"])
-    for item in report.citations:
-        if item.source_type == "QNET" and item.source_url:
-            source = f"[Q-Net 공식 페이지]({item.source_url})"
-        elif item.source_url and str(item.source_url).startswith(("http://", "https://")):
-            source = f"[원문 보기]({item.source_url})"
-        else:
-            source = "내부 기준 문서"
-        lines.append(f"- {_user_facing(item.item_name)}: {source}")
-    if not report.citations:
-        lines.append("- 연결된 외부 출처 없음")
-    lines.extend(["", "## 12. 주의사항과 확인 필요 항목"])
-    lines.extend(f"- 충돌: {_user_facing(item)}" for item in report.conflicts)
-    lines.extend(f"- 한계: {_user_facing(item)}" for item in report.limitations)
-    lines.extend(f"- 확인 필요: {_user_facing(item)}" for item in report.human_review_items)
+    lines.extend(["", "## 10. 근거 및 출처"])
+    lines.append("### Q-Net 공식 자격 정보")
+    qnet_source_count = 0
+    for item in report.qnet_evidence:
+        safe_url = _safe_qnet_url(item.source_url)
+        if not safe_url:
+            continue
+        checked = f" · {item.checked_at[:10]} 확인" if item.checked_at else ""
+        lines.append(f"- [{_user_facing(item.normalized_name)}]({safe_url}){checked}")
+        qnet_source_count += 1
+    if qnet_source_count == 0:
+        lines.append("- 연결된 Q-Net 공식 페이지가 없습니다.")
+
+    lines.append("### 내부 Knowledge Base 참고 자료")
+    kb_certification_groups = {
+        comparison_key(item.item_name)
+        for item in report.knowledge_base_evidence
+        if item.item_type == "CERTIFICATION"
+    }
+    kb_certifications: list[str] = []
+    for group in report.missing_core_certification_groups + report.recommended_certification_groups:
+        if comparison_key(group.group_name) in kb_certification_groups:
+            kb_certifications.extend(group.certification_names)
+    kb_certifications = list(dict.fromkeys(kb_certifications))
+    kb_abilities = list(dict.fromkeys(
+        _user_facing(item.item_name)
+        for item in report.knowledge_base_evidence
+        if item.item_type == "ABILITY"
+    ))
+    lines.append(
+        f"- 참고한 자격증: {', '.join(_user_facing(name) for name in kb_certifications) or '없음'}"
+    )
+    if kb_abilities:
+        lines.append(f"- 참고한 능력 기준: {', '.join(kb_abilities)}")
+    lines.extend(["", "## 11. 주의사항과 확인 필요 항목"])
+    lines.extend([
+        "- 이 보고서는 지원서와 내부 기준 자료를 바탕으로 작성한 참고용 안내이며, 자격 취득·응시 가능 여부나 채용을 보장하지 않습니다.",
+        "- 시험 일정, 응시자격, 수수료는 변경될 수 있으므로 신청 전에 위에 연결된 Q-Net 공식 페이지에서 최신 내용을 직접 확인하세요.",
+        "- 현장별 실제 자격·능력 요구사항은 인력사무소 또는 건설사에 최종 확인하세요.",
+    ])
     return "\n".join(lines).rstrip() + "\n"

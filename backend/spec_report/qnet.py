@@ -18,7 +18,7 @@ from ncs_collector.models import QualificationEvidence
 from ncs_collector.text import comparison_key, normalize_text
 
 _ALLOWED_HOSTS = {"q-net.or.kr", "www.q-net.or.kr"}
-_CACHE_SCHEMA_VERSION = 3
+_CACHE_SCHEMA_VERSION = 6
 
 
 def validate_qnet_url(url: str) -> str:
@@ -130,6 +130,64 @@ def _plain_text(value: str) -> str:
     return normalize_text(" ".join(parser.parts))
 
 
+class _LineTextParser(HTMLParser):
+    """Preserve visible Q-Net paragraphs and table rows as plain-text lines."""
+
+    _BLOCK_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6", "li", "p", "tr"}
+
+    def __init__(self):
+        super().__init__()
+        self.lines: list[str] = []
+        self.current: list[str] = []
+        self._ignored_depth = 0
+
+    def _flush(self) -> None:
+        value = normalize_text(" ".join(self.current)).strip(" |")
+        if value:
+            self.lines.append(value)
+        self.current = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        normalized_tag = tag.lower()
+        if normalized_tag in {"script", "style"}:
+            self._ignored_depth += 1
+        elif not self._ignored_depth and normalized_tag == "br":
+            # A line break inside a Q-Net table cell is visual wrapping, not a
+            # new schedule row. Keeping the cell intact lets the renderer map
+            # dates to their proper column labels.
+            self.current.append(" ")
+        elif not self._ignored_depth and normalized_tag in self._BLOCK_TAGS:
+            self._flush()
+
+    def handle_endtag(self, tag: str) -> None:
+        normalized_tag = tag.lower()
+        if normalized_tag in {"script", "style"} and self._ignored_depth:
+            self._ignored_depth -= 1
+        elif not self._ignored_depth and normalized_tag in {"td", "th"}:
+            if self.current and self.current[-1] != "|":
+                self.current.append("|")
+        elif not self._ignored_depth and normalized_tag in self._BLOCK_TAGS:
+            self._flush()
+
+    def handle_data(self, data: str) -> None:
+        if self._ignored_depth:
+            return
+        value = normalize_text(html.unescape(data))
+        if value:
+            self.current.append(value)
+
+    def visible_lines(self) -> list[str]:
+        self._flush()
+        return self.lines
+
+
+def _plain_lines(value: str) -> list[str]:
+    parser = _LineTextParser()
+    parser.feed(html.unescape(value))
+    return parser.visible_lines()
+
+
 def _section_text(payload: str, label: str) -> str | None:
     """Extract a labelled Q-Net textarea section without executing remote markup."""
     match = re.search(
@@ -139,8 +197,49 @@ def _section_text(payload: str, label: str) -> str | None:
     )
     if not match:
         return None
-    value = _plain_text(match.group(1))
+    value = "\n".join(_plain_lines(match.group(1)))
+    if len(value) > 5000:
+        value = value[:5000].rstrip() + "…"
     return value or None
+
+
+def _plain_section(
+    payload: str,
+    label: str,
+    stop_labels: tuple[str, ...],
+    *,
+    max_length: int = 3000,
+) -> str | None:
+    """Extract a bounded visible-text section such as a schedule or fee table.
+
+    Q-Net renders these areas as ordinary tables rather than labelled textareas.
+    The remote page is still treated only as untrusted text: scripts/styles are
+    discarded by ``_plain_lines`` and no markup or instruction is executed.
+    """
+    visible_lines = _plain_lines(payload)
+    start_index = next(
+        (
+            index
+            for index, line in enumerate(visible_lines)
+            if line == label or line.startswith(f"{label} ")
+        ),
+        None,
+    )
+    if start_index is None:
+        return None
+    first_line = visible_lines[start_index]
+    values = [first_line[len(label):].strip()] if first_line != label else []
+    for line in visible_lines[start_index + 1:]:
+        if any(line == stop or line.startswith(f"{stop} ") for stop in stop_labels):
+            break
+        values.append(line)
+    values = [value for value in values if value]
+    if not values:
+        return None
+    tail = "\n".join(values)
+    if len(tail) > max_length:
+        tail = tail[:max_length].rstrip() + "…"
+    return tail
 
 
 def _qualification_code(payload: str, normalized_name: str) -> str | None:
@@ -246,9 +345,24 @@ class QNetHttpAdapter:
                 _section_text(basic_payload, "응시자격")
                 or _section_text(exam_payload, "응시자격")
             )
-            exam_information = (
+            acquisition_method = (
                 _section_text(exam_payload, "취득방법")
                 or _section_text(exam_payload, "시험정보")
+            )
+            exam_schedule = _plain_section(
+                exam_payload,
+                "시험일정",
+                ("검정형 자격 시험정보", "시험정보", "수수료", "출제경향", "취득방법"),
+            ) or _plain_section(
+                exam_payload,
+                "검정형 자격 시험일정",
+                ("검정형 자격 시험정보", "시험정보", "수수료", "출제경향", "취득방법"),
+            )
+            fees = _plain_section(
+                exam_payload,
+                "수수료",
+                ("출제경향", "공개문제", "취득방법", "출제기준"),
+                max_length=500,
             )
             qualification_status = (
                 _section_text(basic_payload, "시행상태")
@@ -261,7 +375,10 @@ class QNetHttpAdapter:
                 issuing_organization=issuing_organization,
                 duties=duties,
                 eligibility=eligibility,
-                exam_information=exam_information,
+                acquisition_method=acquisition_method,
+                exam_schedule=exam_schedule,
+                fees=fees,
+                exam_information=acquisition_method,
                 source_url=validate_qnet_url(detail_url),
                 checked_at=checked_at,
                 fetch_status="SUCCESS",

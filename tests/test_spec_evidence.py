@@ -118,7 +118,7 @@ def test_15_qnet_cache_hit_avoids_web():
         "source_url": QNET_URL,
         "checked_at": "2026-01-01T00:00:00+00:00",
         "fetch_status": "SUCCESS",
-        "schema_version": 3,
+        "schema_version": 6,
         "expires_at": int(time.time()) + 60,
     })
     result = QNetQualificationService(NeverWeb(), DynamoQualificationCache(table=table)).fetch_qnet_qualification("방수기능사", QNET_URL)
@@ -284,7 +284,24 @@ class FakeQNetOpener:
             )
         else:
             payload = (
-                '<b class="contTit1">취득방법</b><textarea>필기와 실기 시험</textarea>'
+                '<h3>시험일정</h3><p>방수기능사 원서접수 안내</p>'
+                '<p>구분, 필기원서접수, 필기시험 순으로 시험일정 안내표</p>'
+                '<table><tr><th>구분</th><th>필기원서접수</th><th>필기시험</th>'
+                '<th>필기합격발표</th><th>실기원서접수</th><th>실기시험</th>'
+                '<th>최종합격발표</th></tr><tr><td>2026년 정기 기능사 3회</td>'
+                '<td>2026.06.08<br/>~<br/>2026.06.11</td><td>2026.06.20</td>'
+                '<td>2026.07.01</td><td>2026.07.05<br/>~<br/>2026.07.08</td>'
+                '<td>2026.08.01<br/>~<br/>2026.08.15</td><td>2026.09.01</td></tr></table>'
+                '<h3>시험정보</h3><h4>수수료</h4>'
+                '<p>필기, 실기 항목순으로 수수료 안내표</p><table>'
+                '<tr><th>필기</th><th>실기</th></tr><tr><td>14,500원</td>'
+                '<td>50,500원</td></tr></table><h4>출제경향</h4>'
+                '<b class="contTit1">취득방법</b><textarea>'
+                '<p>방수기능사 취득방법</p><p>① 시 행 처 : 한국산업인력공단</p>'
+                '<p>② 관련학과 : 건축 관련 학과</p><p>③ 시험과목</p>'
+                '<p>- 필기 : 건축일반</p><p>- 실기 : 방수 작업</p>'
+                '<p>④ 검정방법</p><p>- 필기 : 객관식</p><p>- 실기 : 작업형</p>'
+                '</textarea>'
                 "<b>응시자격</b><textarea>제한 없음</textarea>"
             )
         return FakeResponse(url, payload)
@@ -301,6 +318,11 @@ def test_34_qnet_http_adapter_resolves_exact_name_and_detail_fields():
     assert evidence.status == "시행중"
     assert evidence.duties == "방수 시공 작업을 수행한다."
     assert evidence.eligibility == "제한 없음"
+    assert "방수기능사 취득방법" in evidence.acquisition_method
+    assert "3 시험과목" in evidence.acquisition_method
+    assert "2026년 정기 기능사 3회" in evidence.exam_schedule
+    assert "2026.06.08 ~ 2026.06.11" in evidence.exam_schedule
+    assert evidence.fees.endswith("14,500원 | 50,500원")
     assert "id=crf00503" in evidence.source_url
     assert len(opener.urls) == 3
 
@@ -340,7 +362,7 @@ def test_37_agent_json_code_fence_is_removed_without_other_rewrite():
 
 
 def test_38_qnet_text_parser_discards_script_and_style_content():
-    from spec_report.qnet import _plain_text
+    from spec_report.qnet import _plain_section, _plain_text
 
     value = _plain_text(
         "<style>BODY { COLOR: red }</style><p>시험과목 방수작업</p>"
@@ -348,3 +370,15 @@ def test_38_qnet_text_parser_discards_script_and_style_content():
     )
 
     assert value == "시험과목 방수작업"
+    schedule = _plain_section(
+        "<h3>시험일정</h3><table>"
+        "<tr><td>정기 기능사 1회</td><td>2026.01.01<br/>~<br/>2026.01.04 접수</td></tr>"
+        "<tr><td>정기 기능사 2회</td><td>2026.04.01 접수</td></tr>"
+        "</table><script>ignoreInstruction()</script><h3>시험정보</h3>",
+        "시험일정",
+        ("시험정보",),
+    )
+    assert schedule == (
+        "정기 기능사 1회 | 2026.01.01 ~ 2026.01.04 접수\n"
+        "정기 기능사 2회 | 2026.04.01 접수"
+    )

@@ -153,6 +153,39 @@ def test_spec_report_job_start_is_owned_and_invoked_asynchronously(monkeypatch):
     assert storage.started[1]["owner_user_id"] == "worker-sub"
     assert invoked[0]["reportId"] == body["reportId"]
     assert invoked[0]["applicant"]["persistReport"] is True
+    assert invoked[0]["_notificationUserId"] == "worker-sub"
+    assert invoked[0]["_notificationCreatedAt"]
+
+
+def test_async_spec_report_completion_notifies_the_owner(monkeypatch):
+    notifications = []
+
+    class Storage:
+        def fail_job(self, *_args):
+            raise AssertionError("completed job must not fail")
+
+    class Service:
+        def generate(self, applicant, *, report_id):
+            assert applicant.target_trade == "방수시공"
+            assert report_id == "job-notify"
+
+    monkeypatch.setattr(lambda_app, "_storage", lambda: Storage())
+    monkeypatch.setattr(lambda_app, "_service", lambda: Service())
+    monkeypatch.setattr(lambda_app.db, "put_notification", notifications.append)
+
+    result = lambda_app._run_async_job({
+        "reportId": "job-notify",
+        "applicant": _applicant(False).model_dump(mode="json", by_alias=True),
+        "_notificationUserId": "worker-owner",
+        "_notificationCreatedAt": "2026-07-17T10:00:00+00:00",
+    })
+
+    assert result == {"status": "COMPLETED", "reportId": "job-notify"}
+    assert notifications[0]["user_id"] == "worker-owner"
+    assert notifications[0]["type"] == "SPEC_REPORT_COMPLETED"
+    assert notifications[0]["sk"] == (
+        "2026-07-17T10:00:00+00:00#NOTI_REPORT_job-notify_COMPLETED"
+    )
 
 
 def test_spec_report_job_can_only_be_read_by_owner(monkeypatch):
@@ -360,24 +393,94 @@ def test_runner_uses_strands_structured_output_model():
 
 
 def test_markdown_hides_ncs_codes_and_uses_clickable_qnet_link():
-    structured = analyze_gap(_applicant(), REPO)
+    applicant = _applicant()
+    applicant.certifications = []
+    structured = analyze_gap(applicant, REPO)
+    structured.target_specialty = "FORMWORK, MASONRY"
     code = structured.missing_abilities[0].ncs_code
     structured.priority_actions[0].reason = f"직종 요구 NCS 능력 보완 ({code})"
+    missing_group = structured.missing_core_certification_groups[0]
+    qualification_name = missing_group.certification_names[0]
     qnet_url = "https://www.q-net.or.kr/official"
     report = build_fallback_report(
         structured,
-        {},
-        {"방수기능사": QualificationEvidence(
-            normalized_name="방수기능사",
-            official_name="방수기능사",
+        {missing_group.group_name: RequirementEvidenceResult(
+            status="SUCCESS",
+            evidence=[Evidence(
+                text="내부 자격 요건 근거",
+                document_id="qualification-doc",
+                source_location="s3://knowledge/qualification.csv",
+                evidence_type=EvidenceType.BEDROCK_KB,
+            )],
+        )},
+        {qualification_name: QualificationEvidence(
+            normalized_name=qualification_name,
+            official_name=qualification_name,
+            status="시행중",
+            issuing_organization="한국산업인력공단",
+            eligibility="제한 없음",
+            acquisition_method=(
+                f"{qualification_name} 취득방법\n"
+                "① 시 행 처 : 한국산업인력공단\n"
+                "② 관련학과 : 건축 관련 학과\n"
+                "③ 시험과목\n- 필기 : 건축일반\n- 실기 : 방수 작업\n"
+                "④ 검정방법\n- 필기 : 객관식\n- 실기 : 작업형\n"
+                "※ 공개문제는 고객지원-자료실-공개문제에서 확인"
+            ),
+            exam_schedule=(
+                f"{qualification_name} 원서접수시간 안내\n"
+                "구분, 필기원서접수, 필기시험 순으로 시험일정 안내표\n"
+                "구분 | 필기원서접수 | 필기시험 | 필기합격발표 | "
+                "실기원서접수 | 실기시험 | 최종합격발표\n"
+                "2026년 정기 기능사 3회 | 2026.06.08 ~ 2026.06.11 | "
+                "2026.06.20 | 2026.07.01 | 2026.07.05 ~ 2026.07.08 | "
+                "2026.08.01 ~ 2026.08.15 | 2026.09.01"
+            ),
+            fees=(
+                "필기, 실기 항목순으로 수수료 안내표\n"
+                "필기 | 실기\n14,500원 | 50,500원"
+            ),
             source_url=qnet_url,
             checked_at="2026-07-17T00:00:00+09:00",
             fetch_status="SUCCESS",
         )},
     )
+    report.limitations.append("사용자에게 노출하지 않을 내부 한계 상세")
+    report.human_review_items.append("사용자에게 노출하지 않을 내부 확인 상세")
 
     markdown = render_markdown(report)
 
     assert code not in markdown
-    assert f"[Q-Net 공식 페이지]({qnet_url})" in markdown
+    assert "세부 작업: 형틀목공, 조적공" in markdown
+    assert f"[{qualification_name}]({qnet_url})" in markdown
+    assert "Q-Net 공식 확인 결과" not in markdown
+    assert "#### 자격 정보" in markdown
+    assert "#### 응시·취득 안내" in markdown
+    assert "응시자격: 제한 없음" in markdown
+    assert "관련 학과: 건축 관련 학과" in markdown
+    assert "시험 과목 · 필기: 건축일반" in markdown
+    assert "시험 과목 · 실기: 방수 작업" in markdown
+    assert "검정 방법 · 필기: 객관식" in markdown
+    assert f"{qualification_name} 취득방법" not in markdown
+    assert "시행처 : 한국산업인력공단" not in markdown
+    assert "공개문제는" not in markdown
+    assert "#### 시험 일정" in markdown
+    assert "2026년 정기 기능사 3회" in markdown
+    assert "필기 원서접수: 2026.06.08 ~ 2026.06.11" in markdown
+    assert "필기시험: 2026.06.20" in markdown
+    assert "실기시험: 2026.08.01 ~ 2026.08.15" in markdown
+    assert "원서접수시간 안내" not in markdown
+    assert "시험일정 안내표" not in markdown
+    assert "#### 수수료" in markdown
+    assert "필기: 14,500원" in markdown
+    assert "실기: 50,500원" in markdown
+    assert "수수료 안내표" not in markdown
+    assert "나머지 세부 내용" not in markdown
+    assert "### Q-Net 공식 자격 정보" in markdown
+    assert "2026-07-17 확인" in markdown
+    assert f"참고한 자격증: {qualification_name}" in markdown
+    assert "자격 취득·응시 가능 여부나 채용을 보장하지 않습니다" in markdown
+    assert "Q-Net 공식 페이지에서 최신 내용을 직접 확인하세요" in markdown
+    assert "사용자에게 노출하지 않을 내부 한계 상세" not in markdown
+    assert "사용자에게 노출하지 않을 내부 확인 상세" not in markdown
     assert report.report_id not in markdown

@@ -479,7 +479,13 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
       `# ${payload.targetTrade} 스펙 보완 보고서`, '', '## 종합 의견',
       missing ? `핵심 자격그룹이 충족되지 않았습니다. ${requirements.join(', ')} 중 하나 이상을 검토하세요.` : `핵심 자격그룹을 충족했습니다: ${matches.join(', ')}`,
       '', '## 분석 범위', `지원서 자격증 ${payload.certifications.length}개와 보유 능력 ${payload.abilities.length}개를 기준으로 분석했습니다.`,
-      '', '## 주의사항과 확인 필요 항목', '현재 화면은 mock 모드의 예시 보고서입니다. 운영 모드에서는 Bedrock Knowledge Base와 Q-Net 근거가 연결됩니다.',
+      `세부 작업: ${payload.targetSpecialty || '미지정'}`,
+      '', '## 근거 및 출처', '### Q-Net 공식 자격 정보', '- 로컬 예시 화면에서는 공식 사이트를 조회하지 않습니다.',
+      '### 내부 Knowledge Base 참고 자료', `- 참고한 자격증: ${requirements.join(', ') || '없음'}`,
+      '', '## 주의사항과 확인 필요 항목',
+      '- 이 보고서는 지원서와 내부 기준 자료를 바탕으로 작성한 참고용 안내이며, 자격 취득·응시 가능 여부나 채용을 보장하지 않습니다.',
+      '- 시험 일정, 응시자격, 수수료는 신청 전에 Q-Net 공식 페이지에서 최신 내용을 직접 확인하세요.',
+      '- 현장별 실제 자격·능력 요구사항은 인력사무소 또는 건설사에 최종 확인하세요.',
     ].join('\n');
     return { success: true, data: {
       report: {
@@ -496,6 +502,8 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
 
   'POST /reports/spec-gap/jobs': async (body) => {
     const reportId = `mock-${Date.now()}`;
+    const ownerUserId = getCurrentUserId();
+    const targetTrade = (body as SpecReportRequest).targetTrade;
     mockReportJobs.set(reportId, { reportId, status: 'PROCESSING' });
     void handlers['POST /reports/spec-gap'](body).then((response) => {
       if (response.success) {
@@ -507,8 +515,14 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
           markdown: completed.markdown,
           persisted: true,
         });
+        if (ownerUserId) {
+          pushNotification(ownerUserId, 'SPEC_REPORT_COMPLETED', '스펙 보고서 생성 완료', `${targetTrade} 스펙 보고서가 준비되었습니다. 보고서 목록에서 확인해주세요.`);
+        }
       } else {
         mockReportJobs.set(reportId, { reportId, status: 'FAILED', error: response.error });
+        if (ownerUserId) {
+          pushNotification(ownerUserId, 'SPEC_REPORT_FAILED', '스펙 보고서 생성 실패', `${targetTrade} 스펙 보고서를 만들지 못했습니다. 잠시 후 다시 시도해주세요.`);
+        }
       }
     });
     return { success: true, data: { reportId, status: 'PROCESSING' } };
@@ -797,6 +811,7 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
 
   // AI 자동 편성 (mock: READY 후보에서 자동으로 3안 생성)
   'POST /office/requests/{requestId}/agent-compose': async (_body, requestId?: string) => {
+    const requesterUserId = getCurrentUserId() || 'USER_OFFICE_001';
     await delay(1500); // AI 호출 시뮬레이션
     const request = mockState.requests.find((r) => r.request_id === requestId);
     if (!request) return { success: false, error: { code: 'REQUEST_NOT_FOUND', message: '요청을 찾을 수 없습니다.' } };
@@ -886,6 +901,8 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
     const reqIdx = mockState.requests.findIndex((r) => r.request_id === requestId);
     if (reqIdx >= 0) mockState.requests[reqIdx] = { ...mockState.requests[reqIdx], status: 'PROPOSED', updated_at: now() };
 
+    pushNotification(requesterUserId, 'AI_COMPOSITION_COMPLETED', 'AI 편성 완료', `"${request.site_name}" 작업의 추천 조합이 준비되었습니다. 요청 상세에서 확인해주세요.`);
+
     return { success: true, data: newCrew };
   },
 
@@ -950,6 +967,7 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
 
   // AI 긴급 재편성 (EMERGENCY): 잔여 팀원 고정, 빈 자리에 대체 인력 추천
   'POST /office/gap-events/{eventId}/agent-recompose': async (_body, eventId?: string) => {
+    const requesterUserId = getCurrentUserId() || 'USER_OFFICE_001';
     const evIdx = mockState.gapEvents.findIndex((g) => g.event_id === eventId);
     if (evIdx < 0) return { success: false, error: { code: 'GAP_EVENT_NOT_FOUND', message: '결원 이벤트를 찾을 수 없습니다.' } };
     const ev = mockState.gapEvents[evIdx];
@@ -1034,6 +1052,7 @@ export const handlers: Record<string, (body?: unknown, pathParam?: string) => Pr
 
     // PROPOSED 전이 + 추천 저장
     mockState.gapEvents[evIdx] = { ...mockState.gapEvents[evIdx], status: 'PROPOSED', recommendations, updated_at: now() };
+    pushNotification(requesterUserId, 'AI_RECOMPOSITION_COMPLETED', '긴급 재편성 완료', `"${request.site_name}" 작업의 대체 인력 추천이 준비되었습니다. 긴급 편성 화면에서 확인해주세요.`);
     return { success: true, data: mockState.gapEvents[evIdx] };
   },
 

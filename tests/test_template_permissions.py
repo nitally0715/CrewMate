@@ -38,6 +38,12 @@ def test_agent_lambdas_have_async_self_invoke_permissions() -> None:
     assert "lambda:InvokeFunction" in crew
     assert "lambda:InvokeFunction" in report
     assert "s3:GetObject" in report and "s3:PutObject" in report
+    assert "Sid: WriteCompositionNotifications" in crew
+    assert "Action: [dynamodb:PutItem]" in crew
+    assert "Resource: !GetAtt NotificationsTable.Arn" in crew
+    assert "Sid: WriteReportNotifications" in report
+    assert "Action: [dynamodb:PutItem]" in report
+    assert "Resource: !GetAtt NotificationsTable.Arn" in report
 
 
 def test_report_agent_has_bounded_background_timeout() -> None:
